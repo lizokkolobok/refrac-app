@@ -98,7 +98,7 @@ def suggest_by_content(missing, extra, df_new, train, feats):
             out[m] = [e for _, e in scored]
     return out
 
-st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="🛢️", layout="wide")
+st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="", layout="wide")
 
 
 # ----------------------------- model loading -----------------------------
