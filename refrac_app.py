@@ -169,7 +169,7 @@ def score(df_raw, models, train, feats):
 
 
 # ----------------------------- UI -----------------------------
-st.title("🛢️ Re-Frac Candidate Screening")
+st.title("Re-Frac Candidate Screening")
 st.caption("Upload a CSV of wells and the model ranks them by predicted re-frac upside. "
            "Model: v1 (Central Basin Platform, Permian).")
 
@@ -221,7 +221,7 @@ if "colmap" not in st.session_state:
     st.session_state.colmap = {}
 
 if crit_missing:
-    st.warning("⚠️ **Important features are missing.** If your file uses different column "
+    st.warning("**Important features are missing.** If your file uses different column "
                "names for the same thing, match them below — nothing is renamed until you confirm.")
     name_sug = suggest_matches(crit_missing, extra)
     content_sug = suggest_by_content(crit_missing, extra, df_raw, train, feats)
@@ -254,11 +254,11 @@ if crit_missing:
         df_raw = df_raw.rename(columns=st.session_state.colmap)
         missing, extra, crit_missing, hints = check_columns(df_raw, feats)
         if not crit_missing:
-            st.success("✅ All important features now present after matching.")
+            st.success("All important features now present after matching.")
         else:
             st.warning("Still missing: " + ", ".join(f"`{c}`" for c in crit_missing))
 else:
-    st.success("✅ All important features present.")
+    st.success("All important features present.")
 
 if st.button("Run screening", type="primary"):
     with st.spinner("Scoring wells..."):
@@ -275,6 +275,6 @@ if st.button("Run screening", type="primary"):
     if "pred_upside_p95" in top.columns:
         st.bar_chart(top.set_index(show_cols[1] if len(show_cols) > 1 else "model_rank")["pred_upside_p95"].head(30))
 
-    st.download_button("⬇️ Download full ranked CSV",
+    st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells.csv", mime="text/csv")
