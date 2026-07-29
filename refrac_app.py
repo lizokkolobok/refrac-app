@@ -70,6 +70,34 @@ def suggest_matches(missing, extra):
             out[m] = [e for _, e in scored]
     return out
 
+
+def suggest_by_content(missing, extra, df_new, train, feats):
+    """Content-based hint: for each missing model column, find unused numeric columns
+    in the upload whose value distribution resembles that column in the training data.
+    Returns {missing_col: [candidate_cols ranked by distribution similarity]}."""
+    import numpy as np
+    def stats(s):
+        s = pd.to_numeric(s, errors="coerce").dropna()
+        if len(s) < 5: return None
+        return np.array([s.median(), s.quantile(0.1), s.quantile(0.9)], float)
+    train_stats = {m: stats(train[m]) for m in missing if m in train.columns}
+    extra_stats = {e: stats(df_new[e]) for e in extra}
+    out = {}
+    for m, ts in train_stats.items():
+        if ts is None: continue
+        scale = abs(ts[0]) + 1.0
+        scored = []
+        for e, es in extra_stats.items():
+            if es is None: continue
+            # normalized distance between the two 3-number summaries
+            dist = float(np.mean(np.abs(ts - es)) / scale)
+            if dist < 0.5:                      # within ~50% of the training scale
+                scored.append((round(1 - dist, 3), e))
+        scored.sort(reverse=True)
+        if scored:
+            out[m] = [e for _, e in scored]
+    return out
+
 st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="🛢️", layout="wide")
 
 
@@ -195,17 +223,25 @@ if "colmap" not in st.session_state:
 if crit_missing:
     st.warning("⚠️ **Important features are missing.** If your file uses different column "
                "names for the same thing, match them below — nothing is renamed until you confirm.")
-    suggestions = suggest_matches(crit_missing, extra)
+    name_sug = suggest_matches(crit_missing, extra)
+    content_sug = suggest_by_content(crit_missing, extra, df_raw, train, feats)
     with st.form("colmap_form"):
         chosen = {}
         for miss in crit_missing:
-            options = ["— (leave missing) —"] + suggestions.get(miss, []) + \
-                      [e for e in extra if e not in suggestions.get(miss, [])]
-            default_ix = 1 if suggestions.get(miss) else 0
-            pick = st.selectbox(f"Model needs **{miss}** — which of your columns is this?",
+            by_name = name_sug.get(miss, [])
+            by_content = [e for e in content_sug.get(miss, []) if e not in by_name]
+            ranked = by_name + by_content                       # name matches first
+            options = ["— (leave missing) —"] + ranked + \
+                      [e for e in extra if e not in ranked]
+            default_ix = 1 if ranked else 0
+            # label shows why each candidate is suggested
+            tag = ""
+            if by_name:    tag = f"  (best guess by name: {by_name[0]})"
+            elif by_content: tag = f"  (guess by data values: {by_content[0]})"
+            pick = st.selectbox(f"Model needs **{miss}** — which of your columns is this?{tag}",
                                 options, index=default_ix, key=f"map_{miss}")
             if pick != options[0]:
-                chosen[pick] = miss   # your column -> model column
+                chosen[pick] = miss
         applied = st.form_submit_button("Apply column matches")
     if applied:
         st.session_state.colmap = chosen
