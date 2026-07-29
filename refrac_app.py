@@ -25,7 +25,52 @@ CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
             "cum_oil_at_refrac", "cum_gas_at_refrac", "months_on_prod_at_refrac",
             "Proppant_LBS", "PerfInterval_FT", "frac_water_bbl"]
 
-st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="️", layout="wide")
+# known aliases: obvious alternative spellings -> canonical model name
+KNOWN_ALIASES = {
+    "tvd": "TVD_FT", "tvd_ft": "TVD_FT", "true_vertical_depth": "TVD_FT",
+    "md": "MD_FT", "measured_depth": "MD_FT",
+    "proppant": "Proppant_LBS", "proppant_lbs": "Proppant_LBS", "total_proppant": "Proppant_LBS",
+    "perf_interval": "PerfInterval_FT", "perforation_interval": "PerfInterval_FT",
+    "frac_water": "frac_water_bbl", "water_bbl": "frac_water_bbl",
+    "last12": "last12_oil_rate", "oil_last12": "last12_oil_rate", "last_12_oil": "last12_oil_rate", "oillast12": "last12_oil_rate",
+    "last6": "last6_oil_rate", "oil_last6": "last6_oil_rate",
+    "peak": "peak_oil", "peak_oil_rate": "peak_oil",
+    "cum_oil": "cum_oil_at_refrac", "cumulative_oil": "cum_oil_at_refrac",
+    "cum_gas": "cum_gas_at_refrac", "cumulative_gas": "cum_gas_at_refrac",
+}
+
+def _norm(s):
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+def _tokens(s):
+    import re
+    return set(t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t)
+
+def suggest_matches(missing, extra):
+    """For each missing model column, propose similar unused columns from the upload,
+    ranked best-first. Alias hits rank top; then token overlap; then string similarity."""
+    from difflib import SequenceMatcher
+    out = {}
+    for m in missing:
+        mn = _norm(m); mtok = _tokens(m)
+        scored = []
+        for e in extra:
+            en = _norm(e); etok = _tokens(e)
+            if KNOWN_ALIASES.get(en) == m:
+                score = 1.0
+            else:
+                overlap = len(mtok & etok) / max(1, len(mtok | etok))     # token Jaccard
+                ratio   = SequenceMatcher(None, mn, en).ratio()
+                contains = mn in en or en in mn
+                score = max(overlap, ratio, 0.85 if contains else 0)
+            if score >= 0.5:
+                scored.append((round(score, 3), e))
+        scored.sort(reverse=True)
+        if scored:
+            out[m] = [e for _, e in scored]
+    return out
+
+st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="🛢️", layout="wide")
 
 
 # ----------------------------- model loading -----------------------------
@@ -96,7 +141,7 @@ def score(df_raw, models, train, feats):
 
 
 # ----------------------------- UI -----------------------------
-st.title("Re-Frac Candidate Screening")
+st.title("🛢️ Re-Frac Candidate Screening")
 st.caption("Upload a CSV of wells and the model ranks them by predicted re-frac upside. "
            "Model: v1 (Central Basin Platform, Permian).")
 
@@ -143,12 +188,39 @@ c1.metric("Features the model needs", len(feats))
 c2.metric("Missing (median-filled)", len(missing), delta=f"{len(crit_missing)} important" if crit_missing else "none important",
           delta_color="inverse" if crit_missing else "off")
 
+# initialise the confirmed rename map for this upload
+if "colmap" not in st.session_state:
+    st.session_state.colmap = {}
+
 if crit_missing:
-    st.warning("⚠️ **Important features are missing — predictions will be less reliable:**\n\n"
-               + "\n".join(f"- `{c}`" for c in crit_missing))
-    for e, m in hints:
-        st.info(f"💡 Your column **`{e}`** looks like it might be **`{m}`** renamed. "
-                f"Rename it to match so the model uses it.")
+    st.warning("⚠️ **Important features are missing.** If your file uses different column "
+               "names for the same thing, match them below — nothing is renamed until you confirm.")
+    suggestions = suggest_matches(crit_missing, extra)
+    with st.form("colmap_form"):
+        chosen = {}
+        for miss in crit_missing:
+            options = ["— (leave missing) —"] + suggestions.get(miss, []) + \
+                      [e for e in extra if e not in suggestions.get(miss, [])]
+            default_ix = 1 if suggestions.get(miss) else 0
+            pick = st.selectbox(f"Model needs **{miss}** — which of your columns is this?",
+                                options, index=default_ix, key=f"map_{miss}")
+            if pick != options[0]:
+                chosen[pick] = miss   # your column -> model column
+        applied = st.form_submit_button("Apply column matches")
+    if applied:
+        st.session_state.colmap = chosen
+        if chosen:
+            st.success("Matched: " + ", ".join(f"`{k}` → `{v}`" for k, v in chosen.items()))
+        else:
+            st.info("No matches applied — missing columns will be filled with typical values.")
+    # re-check after any confirmed mapping
+    if st.session_state.colmap:
+        df_raw = df_raw.rename(columns=st.session_state.colmap)
+        missing, extra, crit_missing, hints = check_columns(df_raw, feats)
+        if not crit_missing:
+            st.success("✅ All important features now present after matching.")
+        else:
+            st.warning("Still missing: " + ", ".join(f"`{c}`" for c in crit_missing))
 else:
     st.success("✅ All important features present.")
 
