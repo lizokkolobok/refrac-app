@@ -1,204 +1,211 @@
 """
-Re-Frac Candidate Screening — web interface for the v1 (CBP) model.
-Upload a CSV of wells (feature columns, like training_data.csv) and the app
-ranks them, flags missing important features, and returns the top candidates.
+Re-Frac Candidate Screening - HYBRID web interface.
+Scores uploaded wells using each basin's best model:
+  - dead basins (no successful re-fracs) are excluded from results
+  - strong basins use their own dedicated model
+  - all other basins use the national model (v2.1)
+Self-contained: reproduces the training feature pipeline from the bundles.
 
-Run locally / in Colab:   streamlit run refrac_app.py
-Requires (see requirements.txt): streamlit, pandas, numpy, scikit-learn, joblib
-The two model files must sit next to this script:
-    final_quantile_models.joblib
-    training_data.csv
+Files that must sit next to this script:
+  national_model_v2_1.joblib
+  basin_models/model_<BASIN>.joblib   (one per basin with its own model)
+
+Run:  streamlit run refrac_app.py
+Requirements: streamlit, pandas, numpy, scikit-learn, joblib
 """
-import os
+import os, glob
 import numpy as np
 import pandas as pd
 import joblib
 import streamlit as st
 
 HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else "."
-MODEL_PATH = os.path.join(HERE, "final_quantile_models.joblib")
-TRAIN_PATH = os.path.join(HERE, "training_data.csv")
-SUCCESS_BOE = 15000
+NATIONAL_PATH = os.path.join(HERE, "national_model_v2_1.joblib")
+BASIN_DIR = os.path.join(HERE, "basin_models")
 
-# important features — a missing one makes predictions unreliable
+# ---- CONFIG (edit based on the OOF comparison summary) ----------------------
+STRONG_BASINS = {"MID-CONTINENT OTHER", "ARK-LA-TX", "MIDLAND"}   # own model wins OOF
+DEAD_BASINS = {"SAN JUAN", "RATON"}                              # 0% success -> excluded
+REFRAC_COST_USD = 400_000
+PROFIT_PER_BOE_USD = 40.0
+BREAKEVEN_BOE = REFRAC_COST_USD / PROFIT_PER_BOE_USD             # 10,000
+
+SUCCESS_BOE = 15000
 CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
             "cum_oil_at_refrac", "cum_gas_at_refrac", "months_on_prod_at_refrac",
             "Proppant_LBS", "PerfInterval_FT", "frac_water_bbl"]
 
-# known aliases: obvious alternative spellings -> canonical model name
-KNOWN_ALIASES = {
-    "tvd": "TVD_FT", "tvd_ft": "TVD_FT", "true_vertical_depth": "TVD_FT",
-    "md": "MD_FT", "measured_depth": "MD_FT",
-    "proppant": "Proppant_LBS", "proppant_lbs": "Proppant_LBS", "total_proppant": "Proppant_LBS",
-    "perf_interval": "PerfInterval_FT", "perforation_interval": "PerfInterval_FT",
-    "frac_water": "frac_water_bbl", "water_bbl": "frac_water_bbl",
-    "last12": "last12_oil_rate", "oil_last12": "last12_oil_rate", "last_12_oil": "last12_oil_rate", "oillast12": "last12_oil_rate",
-    "last6": "last6_oil_rate", "oil_last6": "last6_oil_rate",
-    "peak": "peak_oil", "peak_oil_rate": "peak_oil",
-    "cum_oil": "cum_oil_at_refrac", "cumulative_oil": "cum_oil_at_refrac",
-    "cum_gas": "cum_gas_at_refrac", "cumulative_gas": "cum_gas_at_refrac",
-}
+# ---- feature lists (match the training notebook) ----------------------------
+STRUCTURAL = ["well_age_yrs", "job_year", "refrac_seq", "well_n_refracs",
+              "tvd_ft", "frac_water_bbl", "is_injector",
+              "dist_nearest_ft", "n_offsets_660ft", "n_offsets_1320ft",
+              "n_offsets_2640ft", "n_offsets_2640ft_pre_refrac",
+              "known_injector_within_radius", "lat", "lon"]
+PRODUCTION = ["months_on_prod_at_refrac", "cum_oil_at_refrac", "cum_gas_at_refrac",
+              "cum_water_at_refrac", "last6_oil_rate", "last12_oil_rate",
+              "ip30_oil", "ip90_oil", "peak_oil", "months_to_peak",
+              "underperf_ratio", "pre_arps_Di", "pre_arps_b",
+              "water_cut_at_refrac", "gor_at_refrac"]
+WELLS = ["TVD_FT", "MD_FT", "PerfInterval_FT", "LateralLength_FT", "FracStages",
+         "AverageStageSpacing_FT", "Proppant_LBS", "ProppantIntensity_LBSPerFT",
+         "TotalFluidPumped_BBL", "FluidIntensity_BBLPerFT", "AcidVolume_BBL",
+         "Bottom_Hole_Temp_DEGF", "NumberOfStrings", "OilTestRate_BBLPerDAY",
+         "First3MonthOil_BBL", "First12MonthOil_BBL", "WHLiquids_PCT", "GOR_ScfPerBbl",
+         "orig_proppant_lbs", "orig_fluid_bbl", "orig_frac_stages",
+         "orig_proppant_intensity", "n_formation_tops", "formation_column_ft",
+         "shallowest_top_ft", "deepest_top_ft"]
+NUMERIC = STRUCTURAL + PRODUCTION + WELLS
+ONEHOT = ["Trajectory", "ENVWellboreType", "ENVWellStatus", "ENVProdWellType",
+          "ENVWellType", "Conventional", "state", "ENVProducingMethod"]
+ENG_COLS = ["eng_depletion_rate", "eng_off_peak_ratio", "eng_decline_ratio",
+            "eng_gas_fraction", "eng_proppant_per_perf"]
 
-def _norm(s):
-    return "".join(ch for ch in str(s).lower() if ch.isalnum())
-
-def _tokens(s):
-    import re
-    return set(t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t)
-
-def suggest_matches(missing, extra):
-    """For each missing model column, propose similar unused columns from the upload,
-    ranked best-first. Alias hits rank top; then token overlap; then string similarity."""
-    from difflib import SequenceMatcher
-    out = {}
-    for m in missing:
-        mn = _norm(m); mtok = _tokens(m)
-        scored = []
-        for e in extra:
-            en = _norm(e); etok = _tokens(e)
-            if KNOWN_ALIASES.get(en) == m:
-                score = 1.0
-            else:
-                overlap = len(mtok & etok) / max(1, len(mtok | etok))     # token Jaccard
-                ratio   = SequenceMatcher(None, mn, en).ratio()
-                contains = mn in en or en in mn
-                score = max(overlap, ratio, 0.85 if contains else 0)
-            if score >= 0.5:
-                scored.append((round(score, 3), e))
-        scored.sort(reverse=True)
-        if scored:
-            out[m] = [e for _, e in scored]
-    return out
+st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
 
-def suggest_by_content(missing, extra, df_new, train, feats):
-    """Content-based hint: for each missing model column, find unused numeric columns
-    in the upload whose value distribution resembles that column in the training data.
-    Returns {missing_col: [candidate_cols ranked by distribution similarity]}."""
-    import numpy as np
-    def stats(s):
-        s = pd.to_numeric(s, errors="coerce").dropna()
-        if len(s) < 5: return None
-        return np.array([s.median(), s.quantile(0.1), s.quantile(0.9)], float)
-    train_stats = {m: stats(train[m]) for m in missing if m in train.columns}
-    extra_stats = {e: stats(df_new[e]) for e in extra}
-    out = {}
-    for m, ts in train_stats.items():
-        if ts is None: continue
-        scale = abs(ts[0]) + 1.0
-        scored = []
-        for e, es in extra_stats.items():
-            if es is None: continue
-            # normalized distance between the two 3-number summaries
-            dist = float(np.mean(np.abs(ts - es)) / scale)
-            if dist < 0.5:                      # within ~50% of the training scale
-                scored.append((round(1 - dist, 3), e))
-        scored.sort(reverse=True)
-        if scored:
-            out[m] = [e for _, e in scored]
-    return out
-
-st.set_page_config(page_title="Re-Frac Candidate Screening", page_icon="", layout="wide")
-
-
-# ----------------------------- model loading -----------------------------
 @st.cache_resource
-def load_model():
-    models = joblib.load(MODEL_PATH)
-    train = pd.read_csv(TRAIN_PATH)
-    feats = list(models[0.50].feature_names_in_)
-    return models, train, feats
+def load_models():
+    national = joblib.load(NATIONAL_PATH)
+    basins = {}
+    for mf in glob.glob(os.path.join(BASIN_DIR, "model_*.joblib")):
+        b = joblib.load(mf)
+        name = b.get("version", "").replace("basin-", "").upper().strip()
+        if name:
+            basins[name] = b
+    return national, basins
 
 
-def num(f, c):
+def _num(f, c):
     return pd.to_numeric(f[c], errors="coerce") if c in f.columns else pd.Series(np.nan, index=f.index)
-
 
 def add_eng(df):
     df = df.copy()
-    df["eng_depletion_rate"] = num(df, "cum_oil_at_refrac") / (num(df, "months_on_prod_at_refrac") + 1)
-    df["eng_off_peak_ratio"] = num(df, "last6_oil_rate") / (num(df, "peak_oil") + 1)
-    df["eng_decline_ratio"] = num(df, "last6_oil_rate") / (num(df, "last12_oil_rate") + 1)
-    df["eng_gas_fraction"] = num(df, "cum_gas_at_refrac") / (num(df, "cum_oil_at_refrac") * 6 + num(df, "cum_gas_at_refrac") + 1)
-    df["eng_proppant_per_perf"] = num(df, "Proppant_LBS") / (num(df, "PerfInterval_FT") + 1)
+    df["eng_depletion_rate"] = _num(df, "cum_oil_at_refrac") / (_num(df, "months_on_prod_at_refrac") + 1)
+    df["eng_off_peak_ratio"] = _num(df, "last6_oil_rate") / (_num(df, "peak_oil") + 1)
+    df["eng_decline_ratio"] = _num(df, "last6_oil_rate") / (_num(df, "last12_oil_rate") + 1)
+    df["eng_gas_fraction"] = _num(df, "cum_gas_at_refrac") / (_num(df, "cum_oil_at_refrac") * 6 + _num(df, "cum_gas_at_refrac") + 1)
+    df["eng_proppant_per_perf"] = _num(df, "Proppant_LBS") / (_num(df, "PerfInterval_FT") + 1)
     return df.replace([np.inf, -np.inf], np.nan)
 
+def build_features(df):
+    X = pd.DataFrame(index=df.index)
+    for c in NUMERIC:
+        if c in df.columns:
+            X[c] = pd.to_numeric(df[c], errors="coerce")
+    present = [c for c in ONEHOT if c in df.columns]
+    if present:
+        oh = pd.get_dummies(df[present].astype(str), prefix=present, dummy_na=True)
+        X = pd.concat([X, oh.set_index(X.index)], axis=1)
+    return X.astype(float)
 
-def check_columns(df_new, feats):
-    have = set(df_new.columns)
-    raw_needed = set(feats) | {"cum_oil_at_refrac", "months_on_prod_at_refrac", "last6_oil_rate",
-                               "peak_oil", "last12_oil_rate", "cum_gas_at_refrac", "Proppant_LBS", "PerfInterval_FT"}
-    ENG = {"eng_decline_ratio","eng_off_peak_ratio","eng_depletion_rate",
-           "eng_gas_fraction","eng_proppant_per_perf"}
-    missing = sorted(((raw_needed - have) & (set(feats) | set(CRITICAL))) - ENG)
-    extra = sorted(have - raw_needed)
-    crit_missing = [c for c in missing if c in CRITICAL and c not in ENG]
-    # rename hints
-    hints = []
-    for m in crit_missing:
-        key = m.replace("_", "").lower()
-        for e in extra:
-            el = e.replace("_", "").lower()
-            if key[:5] in el or el[:5] in key:
-                hints.append((e, m))
-    return missing, extra, crit_missing, hints
-
-
-def score(df_raw, models, train, feats):
-    train_e = add_eng(train)
-    med = {c: pd.to_numeric(train_e[c], errors="coerce").median() for c in feats if c in train_e.columns}
-    freq = {}
-    for fc, src in [("county_freq", "county"), ("Field_freq", "Field")]:
-        if src in train.columns:
-            freq[fc] = train[src].value_counts().to_dict()
-
+def features_for_bundle(df_raw, B, basin_series):
     df = add_eng(df_raw)
-    for fc, src in [("county_freq", "county"), ("Field_freq", "Field")]:
-        if fc in feats and src in df.columns:
-            df[fc] = df[src].map(freq.get(fc, {})).fillna(0)
-    X = df.reindex(columns=feats).apply(pd.to_numeric, errors="coerce")
-    for c in feats:
-        X[c] = X[c].fillna(med.get(c, 0))
+    X = build_features(df)
+    X = X.loc[:, ~X.columns.duplicated()]
+    for c in ENG_COLS:
+        if c in df.columns and c not in X.columns:
+            X[c] = pd.to_numeric(df[c], errors="coerce")
+    for c, bm in B.get("basin_medians", {}).items():
+        if c in df.columns:
+            v = pd.to_numeric(df[c], errors="coerce")
+            med = basin_series.map(bm["per_basin"]).fillna(bm["global"])
+            X[f"rel_{c}"] = v / (med + 1)
+    X["basin_n_wells"] = np.log1p(basin_series.map(B.get("basin_counts", {})).fillna(1))
+    for c, fmap in B.get("freq_maps", {}).items():
+        if c in df.columns:
+            X[f"{c}_freq"] = df[c].astype(str).map(fmap).fillna(0)
+    FEATS = B["feats"]
+    Xs = X.reindex(columns=FEATS).apply(pd.to_numeric, errors="coerce")
+    for c in FEATS:
+        Xs[c] = Xs[c].fillna(B.get("train_medians", {}).get(c, 0))
+    return Xs
+
+def predict_bundle(df_raw, B, basin_series):
+    Xs = features_for_bundle(df_raw, B, basin_series)
+    LEV = np.array(B["qgrid"]); models = B["models"]
+    Q = np.sort(np.vstack([models[q].predict(Xs) for q in LEV]).T, axis=1)
+    p50 = Q[:, list(LEV).index(0.50)]
+    if "classifier" in B:
+        prob = B["classifier"].predict_proba(Xs.fillna(-999))[:, 1]
+    else:
+        T = BREAKEVEN_BOE
+        prob = np.array([1 - LEV[0] if T <= qs[0] else (1 - LEV[-1] if T >= qs[-1]
+                        else 1 - np.interp(T, qs, LEV)) for qs in Q])
+    c = float(B.get("conformal", {}).get("__GLOBAL__", 0))
+    return p50, Q[:, 0] - c, Q[:, -1] + c, prob
+
+
+def hybrid_score(df_raw, national, basins):
+    basin = df_raw["ENVBasin"].astype(str).str.upper().str.strip() if "ENVBasin" in df_raw.columns \
+            else pd.Series("UNKNOWN", index=df_raw.index)
+    df_raw = df_raw.copy(); df_raw["_basin"] = basin
+
+    p50 = np.full(len(df_raw), np.nan); lo = np.full(len(df_raw), np.nan)
+    hi = np.full(len(df_raw), np.nan); prob = np.full(len(df_raw), np.nan)
+    model_used = np.array(["national"] * len(df_raw), dtype=object)
+
+    p50[:], lo[:], hi[:], prob[:] = predict_bundle(df_raw, national, basin)
+
+    for b in STRONG_BASINS:
+        if b in basins:
+            mask = (basin == b).values
+            if mask.any():
+                sub = df_raw[mask]
+                p, l, h, pr = predict_bundle(sub, basins[b], sub["_basin"])
+                p50[mask], lo[mask], hi[mask], prob[mask] = p, l, h, pr
+                model_used[mask] = f"basin:{b}"
 
     out = df_raw.copy()
-    out["pred_low_p05"] = models[0.05].predict(X).round(0)
-    out["pred_central_p50"] = models[0.50].predict(X).round(0)
-    out["pred_upside_p95"] = models[0.95].predict(X).round(0)
-    out["model_rank"] = out["pred_upside_p95"].rank(ascending=False, method="first").astype(int)
-    return out.sort_values("model_rank").reset_index(drop=True)
+    out["ENVBasin"] = basin
+    out["prob_exceeds_breakeven"] = np.round(prob, 3)
+    out["expected_profit_USD"] = np.round(p50 * PROFIT_PER_BOE_USD - REFRAC_COST_USD, 0)
+    out["pred_central_p50"] = np.round(p50, 0)
+    out["band_low"] = np.round(lo, 0)
+    out["band_high"] = np.round(hi, 0)
+    out["model_used"] = model_used
+
+    dead_mask = basin.isin(DEAD_BASINS).values
+    dropped = out[dead_mask].copy()                 # wells removed (dead basins)
+    out = out[~dead_mask].copy()
+    out["rank"] = out["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
+    out = out.sort_values("rank").reset_index(drop=True)
+    return out, dropped
 
 
 # ----------------------------- UI -----------------------------
-st.title("Re-Frac Candidate Screening")
-st.caption("Upload a CSV of wells and the model ranks them by predicted re-frac upside. "
-           "Model: v1 (Central Basin Platform, Permian).")
+st.title("Re-Frac Candidate Screening - Hybrid")
+st.caption("Each well is scored by the best model for its basin. Dead basins are excluded; "
+           "strong basins use their own model; the rest use the national model.")
 
-if not (os.path.exists(MODEL_PATH) and os.path.exists(TRAIN_PATH)):
-    st.error("Model files not found. Place **final_quantile_models.joblib** and "
-             "**training_data.csv** in the same folder as this app.")
+missing_files = []
+if not os.path.exists(NATIONAL_PATH):
+    missing_files.append("national_model_v2_1.joblib")
+if not os.path.isdir(BASIN_DIR) or not glob.glob(os.path.join(BASIN_DIR, "model_*.joblib")):
+    missing_files.append("basin_models/ (folder with model_<BASIN>.joblib files)")
+if missing_files:
+    st.error("Missing model files: " + ", ".join(f"**{m}**" for m in missing_files) +
+             ". Place them next to this app.")
     st.stop()
 
-models, train, feats = load_model()
+national, basins = load_models()
 
 with st.sidebar:
-    st.header("Settings")
-    top_n = st.number_input("How many top candidates to show", 10, 1000, 100, step=10)
+    st.header("Setup")
+    st.markdown(f"**National model:** loaded ({national.get('version','v2.1')})")
+    st.markdown(f"**Basin models:** {len(basins)} loaded")
+    st.markdown(f"**Strong basins (own model):** {', '.join(sorted(b for b in STRONG_BASINS if b in basins)) or 'none'}")
+    st.markdown(f"**Dead basins (excluded):** {', '.join(sorted(DEAD_BASINS))}")
     st.markdown("---")
-    st.markdown(f"**Model expects {len(feats)} feature columns.**")
-    with st.expander("See required columns"):
-        st.write(sorted(feats))
-    st.markdown("**Reading the output**")
-    st.markdown("- **p50** — best single estimate (BOE)\n"
-                "- **p95** — upper bound / ranking score\n"
-                "- **p05–p95** — uncertainty range\n"
-                "- **rank** — 1 = strongest candidate")
+    st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
+                f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
+    top_n = st.number_input("Top candidates to show", 10, 2000, 100, step=10)
+    st.markdown("---")
+    st.caption("Input must include an ENVBasin column so each well is routed to the right model.")
 
 uploaded = st.file_uploader("Upload wells CSV", type=["csv"])
-
 if uploaded is None:
-    st.info("Upload a CSV with one row per well. Columns should match the model's features "
-            "(same format as training_data.csv). Missing columns are filled with typical values; "
-            "important missing columns are flagged below after upload.")
+    st.info("Upload a CSV with one row per well, including an ENVBasin column. "
+            "Each well is scored by its basin's best model; dead basins are dropped automatically.")
     st.stop()
 
 try:
@@ -209,72 +216,40 @@ except Exception as e:
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
 
-# ---- column check ----
-missing, extra, crit_missing, hints = check_columns(df_raw, feats)
-c1, c2 = st.columns(2)
-c1.metric("Features the model needs", len(feats))
-c2.metric("Missing (median-filled)", len(missing), delta=f"{len(crit_missing)} important" if crit_missing else "none important",
-          delta_color="inverse" if crit_missing else "off")
+# heads-up about dead-basin wells BEFORE scoring
+if "ENVBasin" in df_raw.columns:
+    _b = df_raw["ENVBasin"].astype(str).str.upper().str.strip()
+    _dead_counts = _b[_b.isin(DEAD_BASINS)].value_counts()
+    if len(_dead_counts):
+        _lines = "\n".join(f"- {name}: {n} well(s)" for name, n in _dead_counts.items())
+        st.warning(f"WARNING - {int(_dead_counts.sum())} well(s) are in dead basins and will be "
+                   f"DROPPED from the results (no successful re-fracs on record there):\n\n{_lines}")
 
-# initialise the confirmed rename map for this upload
-if "colmap" not in st.session_state:
-    st.session_state.colmap = {}
-
-if crit_missing:
-    st.warning("**Important features are missing.** If your file uses different column "
-               "names for the same thing, match them below — nothing is renamed until you confirm.")
-    name_sug = suggest_matches(crit_missing, extra)
-    content_sug = suggest_by_content(crit_missing, extra, df_raw, train, feats)
-    with st.form("colmap_form"):
-        chosen = {}
-        for miss in crit_missing:
-            by_name = name_sug.get(miss, [])
-            by_content = [e for e in content_sug.get(miss, []) if e not in by_name]
-            ranked = by_name + by_content                       # name matches first
-            options = ["— (leave missing) —"] + ranked + \
-                      [e for e in extra if e not in ranked]
-            default_ix = 1 if ranked else 0
-            # label shows why each candidate is suggested
-            tag = ""
-            if by_name:    tag = f"  (best guess by name: {by_name[0]})"
-            elif by_content: tag = f"  (guess by data values: {by_content[0]})"
-            pick = st.selectbox(f"Model needs **{miss}** — which of your columns is this?{tag}",
-                                options, index=default_ix, key=f"map_{miss}")
-            if pick != options[0]:
-                chosen[pick] = miss
-        applied = st.form_submit_button("Apply column matches")
-    if applied:
-        st.session_state.colmap = chosen
-        if chosen:
-            st.success("Matched: " + ", ".join(f"`{k}` → `{v}`" for k, v in chosen.items()))
-        else:
-            st.info("No matches applied — missing columns will be filled with typical values.")
-    # re-check after any confirmed mapping
-    if st.session_state.colmap:
-        df_raw = df_raw.rename(columns=st.session_state.colmap)
-        missing, extra, crit_missing, hints = check_columns(df_raw, feats)
-        if not crit_missing:
-            st.success("All important features now present after matching.")
-        else:
-            st.warning("Still missing: " + ", ".join(f"`{c}`" for c in crit_missing))
-else:
-    st.success("All important features present.")
+if "ENVBasin" not in df_raw.columns:
+    st.warning("No ENVBasin column found - every well will use the national model, and dead "
+               "basins can't be excluded. Add an ENVBasin column for full hybrid routing.")
 
 if st.button("Run screening", type="primary"):
-    with st.spinner("Scoring wells..."):
-        ranked = score(df_raw, models, train, feats)
+    with st.spinner("Scoring wells with per-basin models..."):
+        ranked, dropped = hybrid_score(df_raw, national, basins)
+    if len(dropped):
+        counts = dropped["ENVBasin"].value_counts()
+        lines = "\n".join(f"- {name}: {n} well(s)" for name, n in counts.items())
+        st.warning(f"WARNING - dropped {len(dropped)} well(s) in dead basins "
+                   f"(excluded from the ranking below):\n\n{lines}")
+        with st.expander(f"See the {len(dropped)} dropped wells"):
+            dshow = [c for c in ["well_API14","API14","ENVBasin","operator"] if c in dropped.columns]
+            st.dataframe(dropped[dshow], use_container_width=True, hide_index=True)
+            st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
+                               file_name="dropped_dead_basin_wells.csv", mime="text/csv")
     st.subheader(f"Top {min(top_n, len(ranked))} candidates")
-
-    show_cols = [c for c in ["model_rank", "well_API14", "API14", "operator", "Formation",
-                             "pred_central_p50", "pred_upside_p95", "pred_low_p05"]
-                 if c in ranked.columns]
+    show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
+                        "prob_exceeds_breakeven", "expected_profit_USD",
+                        "pred_central_p50", "band_low", "band_high"] if c in ranked.columns]
     top = ranked.head(int(top_n))
-    st.dataframe(top[show_cols], use_container_width=True, hide_index=True)
-
-    # quick visual: predicted upside of the top candidates
-    if "pred_upside_p95" in top.columns:
-        st.bar_chart(top.set_index(show_cols[1] if len(show_cols) > 1 else "model_rank")["pred_upside_p95"].head(30))
-
+    st.dataframe(top[show], use_container_width=True, hide_index=True)
+    st.caption("Model routing: " + " | ".join(
+        f"{k}: {v}" for k, v in ranked["model_used"].value_counts().items()))
     st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
-                       file_name="ranked_wells.csv", mime="text/csv")
+                       file_name="ranked_wells_hybrid.csv", mime="text/csv")
