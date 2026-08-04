@@ -24,7 +24,9 @@ NATIONAL_PATH = os.path.join(HERE, "national_model_v2_1.joblib")
 BASIN_DIR = os.path.join(HERE, "basin_models")
 
 # ---- CONFIG (edit based on the OOF comparison summary) ----------------------
-STRONG_BASINS = {"MID-CONTINENT OTHER", "ARK-LA-TX", "MIDLAND"}   # own model wins OOF
+STRONG_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
+# (Delaware excluded: basin wins by only +0.006 ROC on 168 wells - within noise, national safer.
+#  Mid-Continent excluded: national actually wins there, 0.947 vs 0.932.)
 DEAD_BASINS = {"SAN JUAN", "RATON"}                              # 0% success -> excluded
 REFRAC_COST_USD = 400_000
 PROFIT_PER_BOE_USD = 40.0
@@ -60,19 +62,108 @@ ONEHOT = ["Trajectory", "ENVWellboreType", "ENVWellStatus", "ENVProdWellType",
 ENG_COLS = ["eng_depletion_rate", "eng_off_peak_ratio", "eng_decline_ratio",
             "eng_gas_fraction", "eng_proppant_per_perf"]
 
+# ---- column-matching helpers (renamed-column handling) ----------------------
+KNOWN_ALIASES = {
+    "tvd": "TVD_FT", "tvd_ft": "TVD_FT", "true_vertical_depth": "TVD_FT",
+    "md": "MD_FT", "measured_depth": "MD_FT",
+    "proppant": "Proppant_LBS", "proppant_lbs": "Proppant_LBS", "total_proppant": "Proppant_LBS",
+    "perf_interval": "PerfInterval_FT", "perforation_interval": "PerfInterval_FT",
+    "frac_water": "frac_water_bbl", "water_bbl": "frac_water_bbl",
+    "last12": "last12_oil_rate", "oil_last12": "last12_oil_rate", "last_12_oil": "last12_oil_rate", "oillast12": "last12_oil_rate",
+    "last6": "last6_oil_rate", "oil_last6": "last6_oil_rate",
+    "peak": "peak_oil", "peak_oil_rate": "peak_oil",
+    "cum_oil": "cum_oil_at_refrac", "cumulative_oil": "cum_oil_at_refrac",
+    "cum_gas": "cum_gas_at_refrac", "cumulative_gas": "cum_gas_at_refrac",
+}
+
+def _norm(s):
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+def _tokens(s):
+    import re
+    return set(t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t)
+
+def suggest_matches(missing, extra):
+    from difflib import SequenceMatcher
+    out = {}
+    for m in missing:
+        mn = _norm(m); mtok = _tokens(m)
+        scored = []
+        for e in extra:
+            en = _norm(e); etok = _tokens(e)
+            if KNOWN_ALIASES.get(en) == m:
+                score = 1.0
+            else:
+                overlap = len(mtok & etok) / max(1, len(mtok | etok))
+                ratio   = SequenceMatcher(None, mn, en).ratio()
+                contains = mn in en or en in mn
+                score = max(overlap, ratio, 0.85 if contains else 0)
+            if score >= 0.5:
+                scored.append((round(score, 3), e))
+        scored.sort(reverse=True)
+        if scored:
+            out[m] = [e for _, e in scored]
+    return out
+
+def suggest_by_content(missing, extra, df_new):
+    """Content hint using the national model's stored basin medians as the reference scale."""
+    def stats(s):
+        s = pd.to_numeric(s, errors="coerce").dropna()
+        if len(s) < 5: return None
+        return np.array([s.median(), s.quantile(0.1), s.quantile(0.9)], float)
+    # reference scale for each missing col: global median from national bundle basin_medians
+    ref = {}
+    for m in missing:
+        bm = national.get("basin_medians", {}).get(m)
+        if bm and "global" in bm:
+            g = bm["global"]; ref[m] = np.array([g, g*0.5, g*1.5], float)
+    extra_stats = {e: stats(df_new[e]) for e in extra}
+    out = {}
+    for m, ts in ref.items():
+        scale = abs(ts[0]) + 1.0
+        scored = []
+        for e, es in extra_stats.items():
+            if es is None: continue
+            dist = float(np.mean(np.abs(ts - es)) / scale)
+            if dist < 0.5:
+                scored.append((round(1 - dist, 3), e))
+        scored.sort(reverse=True)
+        if scored:
+            out[m] = [e for _, e in scored]
+    return out
+
+def check_columns(df_new, feats):
+    have = set(df_new.columns)
+    raw_needed = set(feats) | {"cum_oil_at_refrac", "months_on_prod_at_refrac", "last6_oil_rate",
+                               "peak_oil", "last12_oil_rate", "cum_gas_at_refrac", "Proppant_LBS", "PerfInterval_FT"}
+    ENG = set(ENG_COLS)
+    missing = sorted(((raw_needed - have) & (set(feats) | set(CRITICAL))) - ENG)
+    extra = sorted(have - raw_needed)
+    crit_missing = [c for c in missing if c in CRITICAL and c not in ENG]
+    return missing, extra, crit_missing
+
 st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
+
+def _find_basin_model_files():
+    """Look for basin models in basin_models/ AND next to the app (root)."""
+    files = glob.glob(os.path.join(BASIN_DIR, "model_*.joblib"))
+    files += glob.glob(os.path.join(HERE, "model_*.joblib"))   # loaded loose in the repo root
+    return sorted(set(files))
 
 @st.cache_resource
 def load_models():
     national = joblib.load(NATIONAL_PATH)
-    basins = {}
-    for mf in glob.glob(os.path.join(BASIN_DIR, "model_*.joblib")):
-        b = joblib.load(mf)
-        name = b.get("version", "").replace("basin-", "").upper().strip()
-        if name:
-            basins[name] = b
-    return national, basins
+    basins, load_errors = {}, []
+    for mf in _find_basin_model_files():
+        try:
+            b = joblib.load(mf)
+            name = b.get("version", "").replace("basin-", "").upper().strip()
+            if name:
+                basins[name] = b
+        except Exception as e:
+            load_errors.append((os.path.basename(mf), f"{type(e).__name__}: {e}"))
+    return national, basins, load_errors
 
 
 def _num(f, c):
@@ -180,14 +271,18 @@ st.caption("Each well is scored by the best model for its basin. Dead basins are
 missing_files = []
 if not os.path.exists(NATIONAL_PATH):
     missing_files.append("national_model_v2_1.joblib")
-if not os.path.isdir(BASIN_DIR) or not glob.glob(os.path.join(BASIN_DIR, "model_*.joblib")):
-    missing_files.append("basin_models/ (folder with model_<BASIN>.joblib files)")
+if not _find_basin_model_files():
+    missing_files.append("basin model files (model_<BASIN>.joblib, in basin_models/ or the repo root)")
 if missing_files:
     st.error("Missing model files: " + ", ".join(f"**{m}**" for m in missing_files) +
              ". Place them next to this app.")
     st.stop()
 
-national, basins = load_models()
+national, basins, _load_errors = load_models()
+if _load_errors:
+    st.warning("Some basin models could not be loaded and were skipped "
+               "(those basins will use the national model):\n\n"
+               + "\n".join(f"- {f}: {msg}" for f, msg in _load_errors))
 
 with st.sidebar:
     st.header("Setup")
@@ -215,6 +310,40 @@ except Exception as e:
     st.stop()
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
+
+# ---- renamed-column handling (suggest, user confirms) ----
+if "colmap" not in st.session_state:
+    st.session_state.colmap = {}
+_feats = national["feats"]
+missing, extra, crit_missing = check_columns(df_raw, _feats)
+if crit_missing:
+    st.warning("Some important columns are missing. If your file uses different names for the "
+               "same thing, match them below - nothing is renamed until you confirm.")
+    name_sug = suggest_matches(crit_missing, extra)
+    content_sug = suggest_by_content(crit_missing, extra, df_raw)
+    with st.form("colmap_form"):
+        chosen = {}
+        for miss in crit_missing:
+            by_name = name_sug.get(miss, [])
+            by_content = [e for e in content_sug.get(miss, []) if e not in by_name]
+            ranked_opts = by_name + by_content
+            options = ["- (leave missing) -"] + ranked_opts + [e for e in extra if e not in ranked_opts]
+            tag = ""
+            if by_name:      tag = f"  (best guess by name: {by_name[0]})"
+            elif by_content: tag = f"  (guess by data values: {by_content[0]})"
+            pick = st.selectbox(f"Model needs {miss} - which of your columns is this?{tag}",
+                                options, index=1 if ranked_opts else 0, key=f"map_{miss}")
+            if pick != options[0]:
+                chosen[pick] = miss
+        applied = st.form_submit_button("Apply column matches")
+    if applied:
+        st.session_state.colmap = chosen
+        st.success("Matched: " + (", ".join(f"{k} -> {v}" for k, v in chosen.items()) or "nothing"))
+    if st.session_state.colmap:
+        df_raw = df_raw.rename(columns=st.session_state.colmap)
+        missing, extra, crit_missing = check_columns(df_raw, _feats)
+        if not crit_missing:
+            st.success("All important features present after matching.")
 
 # heads-up about dead-basin wells BEFORE scoring
 if "ENVBasin" in df_raw.columns:
