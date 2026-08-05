@@ -190,7 +190,7 @@ def build_calibration_table(threshold=BREAKEVEN_BOE):
                      "median_actual_BOE": int(g[actc].median())})
     return pd.DataFrame(rows), float(d["_ok"].mean())
 
-st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening", page_icon="", layout="wide")
 
 
 def _find_basin_model_files():
@@ -312,7 +312,7 @@ def hybrid_score(df_raw, national, basins):
 
 
 # ----------------------------- UI -----------------------------
-st.title("Re-Frac Candidate Screening - Hybrid")
+st.title("Re-Frac Candidate Screening")
 st.caption("Each well is scored by the best model for its basin. Dead basins are excluded; "
            "strong basins use their own model; the rest use the national model.")
 
