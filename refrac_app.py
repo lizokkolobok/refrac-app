@@ -22,6 +22,7 @@ import streamlit as st
 HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else "."
 NATIONAL_PATH = os.path.join(HERE, "national_model_v2_1.joblib")
 BASIN_DIR = os.path.join(HERE, "basin_models")
+SHORTLIST_PATH = os.path.join(HERE, "national_shortlist_v2_1.csv")   # historical data for the calibration table
 
 # ---- CONFIG (edit based on the OOF comparison summary) ----------------------
 STRONG_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
@@ -141,6 +142,53 @@ def check_columns(df_new, feats):
     extra = sorted(have - raw_needed)
     crit_missing = [c for c in missing if c in CRITICAL and c not in ENG]
     return missing, extra, crit_missing
+
+
+def flag_recent_refracs(df, years):
+    """Return a boolean Series: True if the well's last re-frac was within `years`.
+    Uses refrac_date if present, else job_year. Wells with no date -> False (unknown)."""
+    import datetime
+    today = pd.Timestamp(datetime.date.today())
+    flag = pd.Series(False, index=df.index)
+    if "refrac_date" in df.columns:
+        dt = pd.to_datetime(df["refrac_date"], errors="coerce")
+        age_yrs = (today - dt).dt.days / 365.25
+        flag = flag | (age_yrs < years)
+    elif "job_year" in df.columns:
+        yr = pd.to_numeric(df["job_year"], errors="coerce")
+        flag = flag | ((today.year - yr) < years)
+    return flag.fillna(False)
+
+
+@st.cache_data
+def build_calibration_table(threshold=BREAKEVEN_BOE):
+    """Reference table from historical wells: group by predicted P50, show how often the
+    actual result actually exceeded the breakeven threshold. None if data unavailable."""
+    if not os.path.exists(SHORTLIST_PATH):
+        return None, None
+    df = pd.read_csv(SHORTLIST_PATH)
+    p50c = next((c for c in ["pred_central_p50","pred_mid_p50"] if c in df.columns), None)
+    actc = next((c for c in ["actual_boe","actual"] if c in df.columns), None)
+    if not (p50c and actc):
+        return None, None
+    d = df.copy()
+    d[p50c] = pd.to_numeric(d[p50c], errors="coerce")
+    d[actc] = pd.to_numeric(d[actc], errors="coerce")
+    d = d.dropna(subset=[p50c, actc])
+    if len(d) == 0:
+        return None, None
+    bins = [-np.inf, 0, 5000, 10000, 15000, 25000, 50000, np.inf]
+    labels = ["< 0", "0-5k", "5-10k", "10-15k", "15-25k", "25-50k", "50k+"]
+    d["_b"] = pd.cut(d[p50c], bins=bins, labels=labels)
+    d["_ok"] = (d[actc] >= threshold).astype(int)
+    rows = []
+    for lab in labels:
+        g = d[d["_b"] == lab]
+        if len(g) == 0: continue
+        rows.append({"model_predicted_P50": lab, "n_wells": len(g),
+                     "actually_exceeded_breakeven": f"{g['_ok'].mean()*100:.0f}%",
+                     "median_actual_BOE": int(g[actc].median())})
+    return pd.DataFrame(rows), float(d["_ok"].mean())
 
 st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
@@ -294,8 +342,25 @@ with st.sidebar:
     st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
                 f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
     top_n = st.number_input("Top candidates to show", 10, 2000, 100, step=10)
+    recent_years = st.slider("Recent re-frac window (years)", 0, 10, 3,
+                             help="Wells whose last re-frac is more recent than this are handled "
+                                  "per the option below. 0 disables it.")
+    recent_action = st.radio("For recently re-fraced wells:", ["Flag only", "Remove from results"],
+                             index=0, help="Flag keeps them in the list with a marker; "
+                                           "Remove drops them like dead-basin wells.")
     st.markdown("---")
-    st.caption("Input must include an ENVBasin column so each well is routed to the right model.")
+    st.caption("Input needs an ENVBasin column (basin routing). A refrac_date or job_year column "
+               "enables the recent-refrac option.")
+
+# reference calibration table (historical): how reliable is a given P50 prediction?
+_cal_table, _cal_base = build_calibration_table()
+if _cal_table is not None:
+    with st.expander("Prediction reliability (calibration table, historical data)"):
+        st.caption(f"Across historical wells, how often did each P50 range actually exceed "
+                   f"breakeven ({BREAKEVEN_BOE:,.0f} BOE)? Overall base rate: {_cal_base*100:.0f}%.")
+        st.dataframe(_cal_table, use_container_width=True, hide_index=True)
+        st.caption("Read: higher predicted P50 -> more reliable. Predictions near/below the "
+                   "threshold are shakier, so treat mid-range predictions with more caution.")
 
 uploaded = st.file_uploader("Upload wells CSV", type=["csv"])
 if uploaded is None:
@@ -361,6 +426,31 @@ if "ENVBasin" not in df_raw.columns:
 if st.button("Run screening", type="primary"):
     with st.spinner("Scoring wells with per-basin models..."):
         ranked, dropped = hybrid_score(df_raw, national, basins)
+    # recent-refrac handling: flag or remove, per the toggle
+    if recent_years > 0:
+        recent_mask = flag_recent_refracs(ranked, recent_years).values
+        n_recent = int(recent_mask.sum())
+        if recent_action == "Remove from results":
+            if n_recent:
+                st.warning(f"WARNING - removed {n_recent} well(s) re-fraced within the last "
+                           f"{recent_years} years (a repeat re-frac may not make sense yet).")
+                recent_removed = ranked[recent_mask].copy()
+                ranked = ranked[~recent_mask].copy()
+                ranked["rank"] = ranked["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
+                ranked = ranked.sort_values("rank").reset_index(drop=True)
+                with st.expander(f"See the {n_recent} removed (recently re-fraced) wells"):
+                    rshow = [c for c in ["well_API14","API14","ENVBasin","refrac_date","job_year"] if c in recent_removed.columns]
+                    st.dataframe(recent_removed[rshow], use_container_width=True, hide_index=True)
+            else:
+                st.caption(f"No wells re-fraced within the last {recent_years} years.")
+        else:  # Flag only
+            ranked["recently_refraced"] = recent_mask
+            if n_recent:
+                st.warning(f"WARNING - {n_recent} well(s) were re-fraced within the last {recent_years} "
+                           f"years and are flagged (recently_refraced = True) but kept in the list. "
+                           f"A repeat re-frac may not make sense yet - review before acting.")
+            else:
+                st.caption(f"No wells re-fraced within the last {recent_years} years.")
     if len(dropped):
         counts = dropped["ENVBasin"].value_counts()
         lines = "\n".join(f"- {name}: {n} well(s)" for name, n in counts.items())
@@ -374,7 +464,8 @@ if st.button("Run screening", type="primary"):
     st.subheader(f"Top {min(top_n, len(ranked))} candidates")
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
                         "prob_exceeds_breakeven", "expected_profit_USD",
-                        "pred_central_p50", "band_low", "band_high"] if c in ranked.columns]
+                        "pred_central_p50", "band_low", "band_high",
+                        "recently_refraced"] if c in ranked.columns]
     top = ranked.head(int(top_n))
     st.dataframe(top[show], use_container_width=True, hide_index=True)
     st.caption("Model routing: " + " | ".join(
