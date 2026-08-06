@@ -367,9 +367,22 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
 
 
 # ----------------------------- UI -----------------------------
-st.title("Re-Frac Candidate Screening - Hybrid")
-st.caption("Each well is scored by the best model for its basin. Dead basins are excluded; "
-           "strong basins use their own model; the rest use the national model.")
+st.markdown("""
+<div style="background: linear-gradient(135deg, #0F766E 0%, #0B5850 100%);
+            padding: 1.6rem 1.8rem; border-radius: 12px; margin-bottom: 1.4rem;
+            box-shadow: 0 2px 8px rgba(15,118,110,0.15);">
+  <div style="font-size: 1.9rem; font-weight: 700; color: #FFFFFF; letter-spacing: .3px;">
+    Re-Frac Candidate Screening
+  </div>
+  <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
+    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+  </div>
+  <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
+    Each well is scored by the best model for its basin. Dead and weak basins are excluded;
+    selected basins use their own model; the rest use the national model.
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 missing_files = []
 if not os.path.exists(NATIONAL_PATH):
@@ -548,7 +561,19 @@ if st.button("Run screening", type="primary"):
             st.dataframe(dropped[dshow], use_container_width=True, hide_index=True)
             st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
                                file_name="dropped_wells.csv", mime="text/csv")
-    st.subheader(f"Top candidates")
+    # summary metric cards
+    st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    n_scored = len(ranked)
+    n_dropped = len(dropped)
+    n_recent = int(ranked["recently_refraced"].sum()) if "recently_refraced" in ranked.columns else 0
+    n_profit = int((ranked["expected_profit_USD"] > 0).sum()) if "expected_profit_USD" in ranked.columns else 0
+    m1.metric("Wells scored", f"{n_scored:,}")
+    m2.metric("Profitable (P50)", f"{n_profit:,}")
+    m3.metric("Excluded (dead/weak)", f"{n_dropped:,}")
+    m4.metric("Recently re-fraced", f"{n_recent:,}")
+
+    st.subheader("Top candidates")
 
     # basin filter on the results
     if "ENVBasin" in ranked.columns:
@@ -564,7 +589,25 @@ if st.button("Run screening", type="primary"):
             if c in view.columns]
     top = view.head(int(top_n))
     st.caption(f"Showing {min(top_n, len(view))} of {len(view)} wells")
-    st.dataframe(top[show], use_container_width=True, hide_index=True)
+
+    # color highlighting: green = high probability / profit, red = low
+    sty = top[show].style
+    try:
+        if "prob_exceeds_breakeven" in show:
+            sty = sty.background_gradient(subset=["prob_exceeds_breakeven"], cmap="RdYlGn", vmin=0, vmax=1)
+        if "expected_profit_USD" in show:
+            sty = sty.background_gradient(subset=["expected_profit_USD"], cmap="RdYlGn")
+        if "relative_uncertainty" in show:
+            sty = sty.background_gradient(subset=["relative_uncertainty"], cmap="RdYlGn_r")
+        fmt = {}
+        if "pred_central_p50" in show:       fmt["pred_central_p50"] = "{:,.0f}"
+        if "expected_profit_USD" in show:    fmt["expected_profit_USD"] = "${:,.0f}"
+        if "prob_exceeds_breakeven" in show: fmt["prob_exceeds_breakeven"] = "{:.0%}"
+        if "relative_uncertainty" in show:   fmt["relative_uncertainty"] = "{:.2f}"
+        sty = sty.format(fmt)
+        st.dataframe(sty, use_container_width=True, hide_index=True)
+    except Exception:
+        st.dataframe(top[show], use_container_width=True, hide_index=True)
     st.caption("Model routing: " + " | ".join(
         f"{k}: {v}" for k, v in ranked["model_used"].value_counts().items()))
     st.download_button("Download full ranked CSV",
