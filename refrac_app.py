@@ -41,6 +41,8 @@ SUCCESS_BOE = 15000
 CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
             "cum_oil_at_refrac", "cum_gas_at_refrac", "months_on_prod_at_refrac",
             "Proppant_LBS", "PerfInterval_FT", "frac_water_bbl"]
+# TOP5 most important input features - if any is missing, the prediction is NOT valid.
+TOP5 = ["last12_oil_rate", "last6_oil_rate", "peak_oil", "cum_oil_at_refrac", "Proppant_LBS"]
 
 # ---- feature lists (match the training notebook) ----------------------------
 STRUCTURAL = ["well_age_yrs", "job_year", "refrac_seq", "well_n_refracs",
@@ -437,6 +439,12 @@ if crit_missing:
             if pick != options[0]:
                 chosen[pick] = miss
         applied = st.form_submit_button("Apply column matches")
+        # RED alert if a TOP5 feature was left unmatched in the form
+        top5_unmatched = [m for m in crit_missing if m in TOP5 and m not in chosen.values()]
+        if applied and top5_unmatched:
+            st.error("PREDICTION NOT VALID - you left a top-5 critical feature without a matching "
+                     "column: **" + ", ".join(top5_unmatched) + "**. The model relies heavily on "
+                     "these; results will be unreliable until they are matched to a real column.")
     if applied:
         st.session_state.colmap = chosen
         st.success("Matched: " + (", ".join(f"{k} -> {v}" for k, v in chosen.items()) or "nothing"))
@@ -445,6 +453,14 @@ if crit_missing:
         missing, extra, crit_missing = check_columns(df_raw, _feats)
         if not crit_missing:
             st.success("All important features present after matching.")
+
+# RED alert if any TOP5 feature is still absent from the data (after any matching)
+_top5_missing = [c for c in TOP5 if c not in df_raw.columns]
+if _top5_missing:
+    st.error("PREDICTION NOT VALID - these top-5 critical features are missing from the data: **"
+             + ", ".join(_top5_missing) + "**. The model depends on them, so any scores produced "
+             "will be filled with placeholder values and should not be trusted. Add or match these "
+             "columns before relying on the results.")
 
 # heads-up about dead-basin wells BEFORE scoring
 if "ENVBasin" in df_raw.columns:
