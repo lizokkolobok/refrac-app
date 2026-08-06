@@ -206,6 +206,45 @@ def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
 
 st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
+# ---- oil-industry theme: deep charcoal + amber ----
+st.markdown("""
+<style>
+:root {
+  --oil-bg: #14110E;
+  --oil-panel: #1E1A15;
+  --oil-amber: #E8A33D;
+  --oil-amber-dim: #B77E2B;
+  --oil-text: #EDE6D8;
+  --oil-muted: #9A8F7C;
+  --oil-line: #3A3229;
+}
+.stApp { background: var(--oil-bg); color: var(--oil-text); }
+section[data-testid="stSidebar"] { background: var(--oil-panel); border-right: 1px solid var(--oil-line); }
+h1, h2, h3 { color: var(--oil-amber); font-family: Georgia, 'Times New Roman', serif; letter-spacing: .3px; }
+h1 { border-bottom: 2px solid var(--oil-amber-dim); padding-bottom: .3rem; }
+.stApp p, .stApp label, .stApp span, .stApp li { color: var(--oil-text); }
+.stCaption, [data-testid="stCaptionContainer"] { color: var(--oil-muted) !important; }
+/* buttons */
+.stButton>button, .stDownloadButton>button {
+  background: var(--oil-amber); color: #14110E; border: none; font-weight: 700;
+  border-radius: 4px;
+}
+.stButton>button:hover, .stDownloadButton>button:hover { background: var(--oil-amber-dim); color: #14110E; }
+/* primary run button */
+.stButton>button[kind="primary"] { background: var(--oil-amber); color:#14110E; }
+/* inputs */
+[data-testid="stFileUploader"], .stSelectbox div, .stNumberInput div, .stSlider {
+  color: var(--oil-text);
+}
+/* dataframe */
+[data-testid="stDataFrame"] { border: 1px solid var(--oil-line); border-radius: 6px; }
+/* expander */
+[data-testid="stExpander"] { border: 1px solid var(--oil-line); border-radius: 6px; background: var(--oil-panel); }
+/* alerts keep their semantic colors but sit on panels nicely */
+[data-testid="stAlert"] { border-radius: 6px; }
+</style>
+""", unsafe_allow_html=True)
+
 
 def _find_basin_model_files():
     """Look for basin models in basin_models/ AND next to the app (root)."""
@@ -319,6 +358,9 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
     with np.errstate(divide="ignore", invalid="ignore"):
         rel = (hi - lo) / np.where(np.abs(p50) < 1, np.nan, p50)
     out["relative_uncertainty"] = np.round(np.abs(rel), 2)
+    # reliable candidate: pays off even in the worst plausible case (band_low above breakeven)
+    # AND the prediction is reasonably tight (relative uncertainty not huge)
+    out["reliable_candidate"] = (lo >= BREAKEVEN_BOE) & (np.abs(rel) <= 3)
     out["model_used"] = model_used
 
     dead_mask = basin.isin(DEAD_BASINS).values
@@ -514,14 +556,39 @@ if st.button("Run screening", type="primary"):
             st.dataframe(dropped[dshow], use_container_width=True, hide_index=True)
             st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
                                file_name="dropped_wells.csv", mime="text/csv")
-    st.subheader(f"Top {min(top_n, len(ranked))} candidates")
+    st.subheader(f"Top candidates")
+
+    # basin filter on the results
+    if "ENVBasin" in ranked.columns:
+        basin_opts = ["All basins"] + sorted(ranked["ENVBasin"].dropna().unique())
+        fbasin = st.selectbox("Filter by basin", basin_opts, key="result_basin")
+        view = ranked if fbasin == "All basins" else ranked[ranked["ENVBasin"] == fbasin]
+    else:
+        view = ranked
+
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
                         "pred_central_p50", "prob_exceeds_breakeven", "expected_profit_USD",
-                        "relative_uncertainty", "recently_refraced"] if c in ranked.columns]
-    top = ranked.head(int(top_n))
+                        "relative_uncertainty", "reliable_candidate", "recently_refraced"]
+            if c in view.columns]
+    top = view.head(int(top_n))
+    n_reliable = int(view["reliable_candidate"].sum()) if "reliable_candidate" in view.columns else 0
+    st.caption(f"Showing {min(top_n, len(view))} of {len(view)} wells | "
+               f"{n_reliable} flagged as reliable candidates")
     st.dataframe(top[show], use_container_width=True, hide_index=True)
     st.caption("Model routing: " + " | ".join(
         f"{k}: {v}" for k, v in ranked["model_used"].value_counts().items()))
     st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
+
+    # column legend
+    with st.expander("What do these columns mean?"):
+        st.markdown("""
+- **pred_central_p50** - the model's central estimate of uplift (barrels of oil equivalent).
+- **prob_exceeds_breakeven** - probability the well clears the breakeven threshold (10,000 BOE).
+- **expected_profit_USD** - P50 x $40 per BOE, minus the $400,000 re-frac cost.
+- **relative_uncertainty** - interval width divided by P50; smaller = more confident. Comparable across wells of any size.
+- **reliable_candidate** - True when the well pays off even in the worst plausible case (lower bound above breakeven) and the prediction is reasonably tight.
+- **model_used** - which model scored the well: the national model, or a basin's own model.
+- **recently_refraced** - flagged if the last re-frac was within the chosen window (a repeat may not make sense yet).
+""")
