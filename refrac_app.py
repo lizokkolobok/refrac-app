@@ -25,10 +25,14 @@ BASIN_DIR = os.path.join(HERE, "basin_models")
 SHORTLIST_PATH = os.path.join(HERE, "national_shortlist_v2_1.csv")   # historical data for the calibration table
 
 # ---- CONFIG (edit based on the OOF comparison summary) ----------------------
-STRONG_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
+OWN_MODEL_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
+# Basins where the dedicated basin model beats the national model out-of-fold.
 # (Delaware excluded: basin wins by only +0.006 ROC on 168 wells - within noise, national safer.
 #  Mid-Continent excluded: national actually wins there, 0.947 vs 0.932.)
 DEAD_BASINS = {"SAN JUAN", "RATON"}                              # 0% success -> excluded
+# Weak basins: uplift is non-zero but <=2% of wells clear the 10k breakeven -> not worth screening.
+WEAK_BASINS = {"ARKOMA", "ROCKIES OTHER", "SACRAMENTO", "PICEANCE", "MID-CONTINENT OTHER"}
+# (San Juan/Raton already covered by DEAD_BASINS; both groups can be dropped or kept via a toggle.)
 REFRAC_COST_USD = 400_000
 PROFIT_PER_BOE_USD = 40.0
 BREAKEVEN_BOE = REFRAC_COST_USD / PROFIT_PER_BOE_USD             # 10,000
@@ -161,36 +165,44 @@ def flag_recent_refracs(df, years):
 
 
 @st.cache_data
-def build_calibration_table(threshold=BREAKEVEN_BOE):
-    """Reference table from historical wells: group by predicted P50, show how often the
-    actual result actually exceeded the breakeven threshold. None if data unavailable."""
+def load_calibration_data():
+    """Load the historical shortlist once. Returns (DataFrame, p50col, actcol, basincol) or Nones."""
     if not os.path.exists(SHORTLIST_PATH):
-        return None, None
+        return None, None, None, None
     df = pd.read_csv(SHORTLIST_PATH)
     p50c = next((c for c in ["pred_central_p50","pred_mid_p50"] if c in df.columns), None)
     actc = next((c for c in ["actual_boe","actual"] if c in df.columns), None)
+    basc = next((c for c in ["ENVBasin","basin"] if c in df.columns), None)
     if not (p50c and actc):
+        return None, None, None, None
+    df = df.copy()
+    df[p50c] = pd.to_numeric(df[p50c], errors="coerce")
+    df[actc] = pd.to_numeric(df[actc], errors="coerce")
+    df = df.dropna(subset=[p50c, actc])
+    if basc:
+        df[basc] = df[basc].astype(str).str.upper().str.strip()
+    return df, p50c, actc, basc
+
+def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
+    """Build a calibration table for a given wells subset. Rows continue up to the
+    highest P50 bucket, so the bucket where accuracy reaches 100% is visible."""
+    if d is None or len(d) == 0:
         return None, None
-    d = df.copy()
-    d[p50c] = pd.to_numeric(d[p50c], errors="coerce")
-    d[actc] = pd.to_numeric(d[actc], errors="coerce")
-    d = d.dropna(subset=[p50c, actc])
-    if len(d) == 0:
-        return None, None
-    bins = [-np.inf, 0, 5000, 10000, 15000, 25000, 50000, np.inf]
-    labels = ["< 0", "0-5k", "5-10k", "10-15k", "15-25k", "25-50k", "50k+"]
-    d["_b"] = pd.cut(d[p50c], bins=bins, labels=labels)
-    d["_ok"] = (d[actc] >= threshold).astype(int)
+    bins = [-np.inf, 0, 5000, 10000, 15000, 25000, 50000, 100000, np.inf]
+    labels = ["< 0", "0-5k", "5-10k", "10-15k", "15-25k", "25-50k", "50-100k", "100k+"]
+    b = pd.cut(d[p50c], bins=bins, labels=labels)
+    ok = (d[actc] >= threshold).astype(int)
     rows = []
     for lab in labels:
-        g = d[d["_b"] == lab]
-        if len(g) == 0: continue
-        rows.append({"model_predicted_P50": lab, "n_wells": len(g),
-                     "actually_exceeded_breakeven": f"{g['_ok'].mean()*100:.0f}%",
-                     "median_actual_BOE": int(g[actc].median())})
-    return pd.DataFrame(rows), float(d["_ok"].mean())
+        m = (b == lab).values
+        if m.sum() == 0: continue
+        acc = ok[m].mean()
+        rows.append({"model_predicted_P50": lab, "n_wells": int(m.sum()),
+                     "actually_exceeded_breakeven": f"{acc*100:.0f}%",
+                     "median_actual_BOE": int(d[actc][m].median())})
+    return pd.DataFrame(rows), float(ok.mean())
 
-st.set_page_config(page_title="Re-Frac Screening", page_icon="", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
 
 def _find_basin_model_files():
@@ -274,7 +286,7 @@ def predict_bundle(df_raw, B, basin_series):
     return p50, Q[:, 0] - c, Q[:, -1] + c, prob
 
 
-def hybrid_score(df_raw, national, basins):
+def hybrid_score(df_raw, national, basins, drop_weak=True):
     basin = df_raw["ENVBasin"].astype(str).str.upper().str.strip() if "ENVBasin" in df_raw.columns \
             else pd.Series("UNKNOWN", index=df_raw.index)
     df_raw = df_raw.copy(); df_raw["_basin"] = basin
@@ -285,7 +297,7 @@ def hybrid_score(df_raw, national, basins):
 
     p50[:], lo[:], hi[:], prob[:] = predict_bundle(df_raw, national, basin)
 
-    for b in STRONG_BASINS:
+    for b in OWN_MODEL_BASINS:
         if b in basins:
             mask = (basin == b).values
             if mask.any():
@@ -301,18 +313,25 @@ def hybrid_score(df_raw, national, basins):
     out["pred_central_p50"] = np.round(p50, 0)
     out["band_low"] = np.round(lo, 0)
     out["band_high"] = np.round(hi, 0)
+    # relative uncertainty: interval width as a fraction of the prediction (scale-free)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = (hi - lo) / np.where(np.abs(p50) < 1, np.nan, p50)
+    out["relative_uncertainty"] = np.round(np.abs(rel), 2)
     out["model_used"] = model_used
 
     dead_mask = basin.isin(DEAD_BASINS).values
-    dropped = out[dead_mask].copy()                 # wells removed (dead basins)
-    out = out[~dead_mask].copy()
-    out["rank"] = out["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
+    weak_mask = basin.isin(WEAK_BASINS).values if drop_weak else np.zeros(len(out), bool)
+    remove_mask = dead_mask | weak_mask
+    dropped = out[remove_mask].copy()
+    dropped["drop_reason"] = np.where(basin[remove_mask].isin(DEAD_BASINS), "dead basin", "weak basin")
+    out = out[~remove_mask].copy()
+    out["rank"] = out["pred_central_p50"].rank(ascending=False, method="first").astype(int)
     out = out.sort_values("rank").reset_index(drop=True)
     return out, dropped
 
 
 # ----------------------------- UI -----------------------------
-st.title("Re-Frac Candidate Screening")
+st.title("Re-Frac Candidate Screening - Hybrid")
 st.caption("Each well is scored by the best model for its basin. Dead basins are excluded; "
            "strong basins use their own model; the rest use the national model.")
 
@@ -336,8 +355,12 @@ with st.sidebar:
     st.header("Setup")
     st.markdown(f"**National model:** loaded ({national.get('version','v2.1')})")
     st.markdown(f"**Basin models:** {len(basins)} loaded")
-    st.markdown(f"**Strong basins (own model):** {', '.join(sorted(b for b in STRONG_BASINS if b in basins)) or 'none'}")
-    st.markdown(f"**Dead basins (excluded):** {', '.join(sorted(DEAD_BASINS))}")
+    st.markdown(f"**Basins scored by their own model:** {', '.join(sorted(b for b in OWN_MODEL_BASINS if b in basins)) or 'none'}")
+    st.markdown(f"**Dead basins (always excluded):** {', '.join(sorted(DEAD_BASINS))}")
+    st.markdown(f"**Weak basins (uplift below breakeven):** {', '.join(sorted(WEAK_BASINS))}")
+    drop_weak = st.checkbox("Exclude weak basins from screening", value=True,
+                            help="Weak basins have some uplift but <=2% of wells clear breakeven. "
+                                 "Uncheck to keep them in the results.")
     st.markdown("---")
     st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
                 f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
@@ -352,15 +375,28 @@ with st.sidebar:
     st.caption("Input needs an ENVBasin column (basin routing). A refrac_date or job_year column "
                "enables the recent-refrac option.")
 
-# reference calibration table (historical): how reliable is a given P50 prediction?
-_cal_table, _cal_base = build_calibration_table()
-if _cal_table is not None:
+# reference calibration tables (historical), per basin: how reliable is a given P50 prediction?
+_cal_df, _p50c, _actc, _basc = load_calibration_data()
+if _cal_df is not None:
     with st.expander("Prediction reliability (calibration table, historical data)"):
         st.caption(f"Across historical wells, how often did each P50 range actually exceed "
-                   f"breakeven ({BREAKEVEN_BOE:,.0f} BOE)? Overall base rate: {_cal_base*100:.0f}%.")
-        st.dataframe(_cal_table, use_container_width=True, hide_index=True)
-        st.caption("Read: higher predicted P50 -> more reliable. Predictions near/below the "
-                   "threshold are shakier, so treat mid-range predictions with more caution.")
+                   f"breakeven ({BREAKEVEN_BOE:,.0f} BOE)? Pick a basin, or All.")
+        if _basc:
+            opts = ["All basins"] + sorted(b for b in _cal_df[_basc].unique()
+                                           if (_cal_df[_basc] == b).sum() >= 20)
+            pick = st.selectbox("Basin", opts, key="cal_basin")
+            sub = _cal_df if pick == "All basins" else _cal_df[_cal_df[_basc] == pick]
+        else:
+            sub = _cal_df
+        tbl, base = calibration_for(sub, _p50c, _actc)
+        if tbl is not None:
+            st.caption(f"n = {len(sub)} wells | base rate: {base*100:.0f}%")
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+            st.caption("Read: higher predicted P50 -> more reliable. Find the row where "
+                       "'actually_exceeded_breakeven' reaches 100% - that's the prediction level "
+                       "you can fully trust in this basin.")
+        else:
+            st.caption("Not enough labelled wells in this basin for a table.")
 
 uploaded = st.file_uploader("Upload wells CSV", type=["csv"])
 if uploaded is None:
@@ -413,11 +449,12 @@ if crit_missing:
 # heads-up about dead-basin wells BEFORE scoring
 if "ENVBasin" in df_raw.columns:
     _b = df_raw["ENVBasin"].astype(str).str.upper().str.strip()
-    _dead_counts = _b[_b.isin(DEAD_BASINS)].value_counts()
-    if len(_dead_counts):
-        _lines = "\n".join(f"- {name}: {n} well(s)" for name, n in _dead_counts.items())
-        st.warning(f"WARNING - {int(_dead_counts.sum())} well(s) are in dead basins and will be "
-                   f"DROPPED from the results (no successful re-fracs on record there):\n\n{_lines}")
+    _excl = DEAD_BASINS | WEAK_BASINS
+    _excl_counts = _b[_b.isin(_excl)].value_counts()
+    if len(_excl_counts):
+        _lines = "\n".join(f"- {name}: {n} well(s)" for name, n in _excl_counts.items())
+        st.warning(f"WARNING - {int(_excl_counts.sum())} well(s) are in dead/weak basins and may be "
+                   f"DROPPED from the results (uplift there rarely clears breakeven):\n\n{_lines}")
 
 if "ENVBasin" not in df_raw.columns:
     st.warning("No ENVBasin column found - every well will use the national model, and dead "
@@ -425,7 +462,7 @@ if "ENVBasin" not in df_raw.columns:
 
 if st.button("Run screening", type="primary"):
     with st.spinner("Scoring wells with per-basin models..."):
-        ranked, dropped = hybrid_score(df_raw, national, basins)
+        ranked, dropped = hybrid_score(df_raw, national, basins, drop_weak=drop_weak)
     # recent-refrac handling: flag or remove, per the toggle
     if recent_years > 0:
         recent_mask = flag_recent_refracs(ranked, recent_years).values
@@ -436,7 +473,7 @@ if st.button("Run screening", type="primary"):
                            f"{recent_years} years (a repeat re-frac may not make sense yet).")
                 recent_removed = ranked[recent_mask].copy()
                 ranked = ranked[~recent_mask].copy()
-                ranked["rank"] = ranked["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
+                ranked["rank"] = ranked["pred_central_p50"].rank(ascending=False, method="first").astype(int)
                 ranked = ranked.sort_values("rank").reset_index(drop=True)
                 with st.expander(f"See the {n_recent} removed (recently re-fraced) wells"):
                     rshow = [c for c in ["well_API14","API14","ENVBasin","refrac_date","job_year"] if c in recent_removed.columns]
@@ -452,20 +489,19 @@ if st.button("Run screening", type="primary"):
             else:
                 st.caption(f"No wells re-fraced within the last {recent_years} years.")
     if len(dropped):
-        counts = dropped["ENVBasin"].value_counts()
-        lines = "\n".join(f"- {name}: {n} well(s)" for name, n in counts.items())
-        st.warning(f"WARNING - dropped {len(dropped)} well(s) in dead basins "
+        counts = dropped.groupby(["drop_reason","ENVBasin"]).size()
+        lines = "\n".join(f"- {basin} ({reason}): {n} well(s)" for (reason, basin), n in counts.items())
+        st.warning(f"WARNING - dropped {len(dropped)} well(s) in dead/weak basins "
                    f"(excluded from the ranking below):\n\n{lines}")
         with st.expander(f"See the {len(dropped)} dropped wells"):
-            dshow = [c for c in ["well_API14","API14","ENVBasin","operator"] if c in dropped.columns]
+            dshow = [c for c in ["well_API14","API14","ENVBasin","drop_reason","operator"] if c in dropped.columns]
             st.dataframe(dropped[dshow], use_container_width=True, hide_index=True)
             st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
-                               file_name="dropped_dead_basin_wells.csv", mime="text/csv")
+                               file_name="dropped_wells.csv", mime="text/csv")
     st.subheader(f"Top {min(top_n, len(ranked))} candidates")
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
-                        "prob_exceeds_breakeven", "expected_profit_USD",
-                        "pred_central_p50", "band_low", "band_high",
-                        "recently_refraced"] if c in ranked.columns]
+                        "pred_central_p50", "prob_exceeds_breakeven", "expected_profit_USD",
+                        "relative_uncertainty", "recently_refraced"] if c in ranked.columns]
     top = ranked.head(int(top_n))
     st.dataframe(top[show], use_container_width=True, hide_index=True)
     st.caption("Model routing: " + " | ".join(
