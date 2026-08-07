@@ -669,6 +669,41 @@ if st.session_state.get("ranked") is not None:
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
 
+    # ---- well map (if coordinates are present) ----
+    lat_col = next((c for c in ["lat", "Latitude", "SurfaceLatitude"] if c in view.columns), None)
+    lon_col = next((c for c in ["lon", "Longitude", "SurfaceLongitude"] if c in view.columns), None)
+    if lat_col and lon_col:
+        st.subheader("Well map")
+        mp = view.copy()
+        mp["_lat"] = pd.to_numeric(mp[lat_col], errors="coerce")
+        mp["_lon"] = pd.to_numeric(mp[lon_col], errors="coerce")
+        mp = mp.dropna(subset=["_lat", "_lon"])
+        if len(mp):
+            st.caption(f"{len(mp)} wells shown. Green = higher probability of exceeding breakeven, "
+                       "red = lower.")
+            try:
+                import pydeck as pdk
+                p = mp["prob_exceeds_breakeven"].fillna(0).clip(0, 1) if "prob_exceeds_breakeven" in mp.columns else 0.5
+                mp["_r"] = ((1 - p) * 220).astype(int)          # red channel high when prob low
+                mp["_g"] = (p * 180 + 40).astype(int)           # green channel high when prob high
+                mp["_api"] = mp[next((c for c in ["well_API14","API14","api10"] if c in mp.columns), mp.columns[0])].astype(str)
+                mp["_prob_txt"] = (mp["prob_exceeds_breakeven"]*100).round(0).astype("Int64").astype(str)+"%" \
+                                  if "prob_exceeds_breakeven" in mp.columns else ""
+                layer = pdk.Layer(
+                    "ScatterplotLayer", data=mp,
+                    get_position=["_lon", "_lat"],
+                    get_fill_color=["_r", "_g", 60, 160],
+                    get_radius=6000, pickable=True, radius_min_pixels=3, radius_max_pixels=12)
+                view_state = pdk.ViewState(latitude=float(mp["_lat"].mean()),
+                                           longitude=float(mp["_lon"].mean()), zoom=4.2)
+                st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state,
+                                         tooltip={"text": "API {_api}\\nBasin {ENVBasin}\\nProb {_prob_txt}"}))
+            except Exception:
+                # fallback: simple built-in map (no color) if pydeck unavailable
+                st.map(mp.rename(columns={"_lat": "lat", "_lon": "lon"})[["lat", "lon"]])
+        else:
+            st.caption("No valid coordinates to map in the current selection.")
+
     # ---- portfolio calculator ----
     st.subheader("Portfolio calculator")
     st.caption("If you re-frac the top N wells from the filtered list above, what does the "
