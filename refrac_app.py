@@ -272,6 +272,8 @@ def _num(f, c):
 
 def add_eng(df):
     df = df.copy()
+    if df.columns.duplicated().any():                 # guard: duplicate names break _num
+        df = df.loc[:, ~df.columns.duplicated()].copy()
     df["eng_depletion_rate"] = _num(df, "cum_oil_at_refrac") / (_num(df, "months_on_prod_at_refrac") + 1)
     df["eng_off_peak_ratio"] = _num(df, "last6_oil_rate") / (_num(df, "peak_oil") + 1)
     df["eng_decline_ratio"] = _num(df, "last6_oil_rate") / (_num(df, "last12_oil_rate") + 1)
@@ -280,10 +282,15 @@ def add_eng(df):
     return df.replace([np.inf, -np.inf], np.nan)
 
 def build_features(df):
+    if df.columns.duplicated().any():                 # guard: keep first of any duplicate
+        df = df.loc[:, ~df.columns.duplicated()].copy()
     X = pd.DataFrame(index=df.index)
     for c in NUMERIC:
         if c in df.columns:
-            X[c] = pd.to_numeric(df[c], errors="coerce")
+            col = df[c]
+            if isinstance(col, pd.DataFrame):
+                col = col.iloc[:, 0]
+            X[c] = pd.to_numeric(col, errors="coerce")
     present = [c for c in ONEHOT if c in df.columns]
     if present:
         oh = pd.get_dummies(df[present].astype(str), prefix=present, dummy_na=True)
