@@ -185,14 +185,23 @@ def load_calibration_data():
         df[basc] = df[basc].astype(str).str.upper().str.strip()
     return df, p50c, actc, basc
 
+def _cal_bins(max_p50):
+    """Uniform 5k-wide P50 bins from <0 up past the data max."""
+    top = int(np.ceil(max(max_p50, 5000) / 5000.0) * 5000)
+    edges = [-np.inf, 0] + list(range(5000, top + 5000, 5000))
+    labels = ["< 0"]
+    lo = 0
+    for hi in edges[2:]:
+        labels.append(f"{lo//1000}-{hi//1000}k")
+        lo = hi
+    return edges, labels
+
 def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
-    """Build a calibration table for a given wells subset. Rows continue up to the
-    highest P50 bucket, so the bucket where accuracy reaches 100% is visible."""
+    """Calibration table for a wells subset, in uniform 5k P50 buckets."""
     if d is None or len(d) == 0:
         return None, None
-    bins = [-np.inf, 0, 5000, 10000, 15000, 25000, 50000, 100000, np.inf]
-    labels = ["< 0", "0-5k", "5-10k", "10-15k", "15-25k", "25-50k", "50-100k", "100k+"]
-    b = pd.cut(d[p50c], bins=bins, labels=labels)
+    edges, labels = _cal_bins(float(d[p50c].max()))
+    b = pd.cut(d[p50c], bins=edges, labels=labels)
     ok = (d[actc] >= threshold).astype(int)
     rows = []
     for lab in labels:
@@ -204,7 +213,43 @@ def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
                      "median_actual_BOE": int(d[actc][m].median())})
     return pd.DataFrame(rows), float(ok.mean())
 
-st.set_page_config(page_title="Re-Frac Screening", page_icon="", layout="wide")
+@st.cache_data
+def basin_calibration_prob(min_bucket=5):
+    """Per-basin lookup: {basin: {bucket_label: success_fraction}} in 5k buckets.
+    Only buckets with >= min_bucket wells are kept (small buckets are too noisy)."""
+    d, p50c, actc, basc = load_calibration_data()
+    if d is None or not basc:
+        return None, None, None
+    edges, labels = _cal_bins(float(d[p50c].max()))
+    d = d.copy()
+    d["_b"] = pd.cut(d[p50c], bins=edges, labels=labels)
+    d["_ok"] = (d[actc] >= BREAKEVEN_BOE).astype(int)
+    table = {}
+    for basin, g in d.groupby(basc):
+        m = {}
+        for lab, gg in g.groupby("_b", observed=True):
+            if len(gg) >= min_bucket:
+                m[str(lab)] = float(gg["_ok"].mean())
+        if m:
+            table[basin] = m
+    return table, edges, labels
+
+def calib_prob_for_wells(ranked):
+    """For each well, look up the historical success rate of its basin+P50 bucket."""
+    tbl, edges, labels = basin_calibration_prob()
+    if tbl is None:
+        return None
+    basin = ranked["ENVBasin"].astype(str).str.upper().str.strip() if "ENVBasin" in ranked.columns else None
+    p50 = pd.to_numeric(ranked.get("pred_central_p50"), errors="coerce")
+    if basin is None:
+        return None
+    buckets = pd.cut(p50, bins=edges, labels=labels).astype(str)
+    out = []
+    for bsn, bkt in zip(basin, buckets):
+        out.append(tbl.get(bsn, {}).get(bkt, np.nan))
+    return pd.Series(out, index=ranked.index)
+
+st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
@@ -387,7 +432,7 @@ st.markdown("""
     Re-Frac Candidate Screening
   </div>
   <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
   </div>
   <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
     Each well is scored by the best model for its basin. Dead and weak basins are excluded;
@@ -422,8 +467,9 @@ with st.sidebar:
     drop_weak = st.checkbox("Exclude weak basins from screening", value=True,
                             help="Weak basins have some uplift but <=2% of wells clear breakeven. "
                                  "Uncheck to keep them in the results.")
-    st.caption("A basin is 'weak' when 2% or fewer of its wells clear breakeven so there's almost "
-               "nothing worth screening.")
+    st.caption("A basin is 'weak' when 2% or fewer of its wells clear breakeven - so there's almost "
+               "nothing worth screening. Basins with a low median but a meaningful share of successes "
+               "(e.g. Permian, Delaware) are kept, since the model exists to find those wells.")
     st.markdown("---")
     st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
                 f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
@@ -569,6 +615,10 @@ if st.button("Run screening", type="primary"):
     else:
         st.session_state.recent_removed = None
         st.session_state.recent_flagged_n = 0
+    # calibration probability: historical success rate of each well's basin + P50 bucket
+    cp = calib_prob_for_wells(ranked)
+    if cp is not None:
+        ranked["calib_prob_from_table"] = cp.round(2)
     # persist results so filter widgets don't wipe them on rerun
     st.session_state.ranked = ranked
     st.session_state.dropped = dropped
@@ -668,7 +718,8 @@ if st.session_state.get("ranked") is not None:
         view = view[view["expected_profit_USD"] > 0]
 
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
-                        "pred_central_p50", "prob_exceeds_breakeven", "expected_profit_USD",
+                        "pred_central_p50", "calib_prob_from_table",
+                        "prob_exceeds_breakeven", "expected_profit_USD",
                         "relative_uncertainty", "recently_refraced"]
             if c in view.columns]
     top = view.head(int(top_n))
@@ -679,6 +730,8 @@ if st.session_state.get("ranked") is not None:
     try:
         if "prob_exceeds_breakeven" in show:
             sty = sty.background_gradient(subset=["prob_exceeds_breakeven"], cmap="RdYlGn", vmin=0, vmax=1)
+        if "calib_prob_from_table" in show:
+            sty = sty.background_gradient(subset=["calib_prob_from_table"], cmap="RdYlGn", vmin=0, vmax=1)
         if "expected_profit_USD" in show:
             sty = sty.background_gradient(subset=["expected_profit_USD"], cmap="RdYlGn")
         if "relative_uncertainty" in show:
@@ -687,6 +740,7 @@ if st.session_state.get("ranked") is not None:
         if "pred_central_p50" in show:       fmt["pred_central_p50"] = "{:,.0f}"
         if "expected_profit_USD" in show:    fmt["expected_profit_USD"] = "${:,.0f}"
         if "prob_exceeds_breakeven" in show: fmt["prob_exceeds_breakeven"] = "{:.0%}"
+        if "calib_prob_from_table" in show:   fmt["calib_prob_from_table"] = "{:.0%}"
         if "relative_uncertainty" in show:   fmt["relative_uncertainty"] = "{:.2f}"
         sty = sty.format(fmt)
         st.dataframe(sty, width='stretch', hide_index=True)
@@ -761,6 +815,7 @@ if st.session_state.get("ranked") is not None:
     with st.expander("What do these columns mean?"):
         st.markdown("""
 - **pred_central_p50** - the model's central estimate of uplift (barrels of oil equivalent).
+- **calib_prob_from_table** - historical success rate for wells in the same basin and P50 range (from the calibration table). Blank if that basin/range has too few historical wells.
 - **prob_exceeds_breakeven** - probability the well clears the breakeven threshold (10,000 BOE).
 - **expected_profit_USD** - P50 x $40 per BOE, minus the $400,000 re-frac cost.
 - **relative_uncertainty** - interval width divided by P50; smaller = more confident. Comparable across wells of any size.
