@@ -440,7 +440,7 @@ if _cal_df is not None:
         tbl, base = calibration_for(sub, _p50c, _actc)
         if tbl is not None:
             st.caption(f"n = {len(sub)} wells | base rate: {base*100:.0f}%")
-            st.dataframe(tbl, use_container_width=True, hide_index=True)
+            st.dataframe(tbl, width='stretch', hide_index=True)
             st.caption("Read: higher predicted P50 -> more reliable. Find the row where "
                        "'actually_exceeded_breakeven' reaches 100% - that's the prediction level "
                        "you can fully trust in this basin.")
@@ -540,7 +540,7 @@ if st.button("Run screening", type="primary"):
                 ranked = ranked.sort_values("rank").reset_index(drop=True)
                 with st.expander(f"See the {n_recent} removed (recently re-fraced) wells"):
                     rshow = [c for c in ["well_API14","API14","ENVBasin","refrac_date","job_year"] if c in recent_removed.columns]
-                    st.dataframe(recent_removed[rshow], use_container_width=True, hide_index=True)
+                    st.dataframe(recent_removed[rshow], width='stretch', hide_index=True)
             else:
                 st.caption(f"No wells re-fraced within the last {recent_years} years.")
         else:  # Flag only
@@ -558,7 +558,7 @@ if st.button("Run screening", type="primary"):
                    f"(excluded from the ranking below):\n\n{lines}")
         with st.expander(f"See the {len(dropped)} dropped wells"):
             dshow = [c for c in ["well_API14","API14","ENVBasin","drop_reason","operator"] if c in dropped.columns]
-            st.dataframe(dropped[dshow], use_container_width=True, hide_index=True)
+            st.dataframe(dropped[dshow], width='stretch', hide_index=True)
             st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
                                file_name="dropped_wells.csv", mime="text/csv")
     # summary metric cards
@@ -633,9 +633,9 @@ if st.button("Run screening", type="primary"):
         if "prob_exceeds_breakeven" in show: fmt["prob_exceeds_breakeven"] = "{:.0%}"
         if "relative_uncertainty" in show:   fmt["relative_uncertainty"] = "{:.2f}"
         sty = sty.format(fmt)
-        st.dataframe(sty, use_container_width=True, hide_index=True)
+        st.dataframe(sty, width='stretch', hide_index=True)
     except Exception:
-        st.dataframe(top[show], use_container_width=True, hide_index=True)
+        st.dataframe(top[show], width='stretch', hide_index=True)
     st.caption("Model routing: " + " | ".join(
         f"{k}: {v}" for k, v in ranked["model_used"].value_counts().items()))
     st.download_button("Download full ranked CSV",
