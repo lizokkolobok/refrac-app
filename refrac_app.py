@@ -263,7 +263,12 @@ def load_models():
 
 
 def _num(f, c):
-    return pd.to_numeric(f[c], errors="coerce") if c in f.columns else pd.Series(np.nan, index=f.index)
+    if c not in f.columns:
+        return pd.Series(np.nan, index=f.index)
+    col = f[c]
+    if isinstance(col, pd.DataFrame):   # duplicate column names -> take the first
+        col = col.iloc[:, 0]
+    return pd.to_numeric(col, errors="coerce")
 
 def add_eng(df):
     df = df.copy()
@@ -458,6 +463,13 @@ try:
 except Exception as e:
     st.error(f"Could not read the CSV: {e}")
     st.stop()
+
+# drop duplicate column names (keep first) - duplicates break numeric conversion
+if df_raw.columns.duplicated().any():
+    dups = sorted(set(df_raw.columns[df_raw.columns.duplicated()]))
+    df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
+    st.warning("Your file has duplicate column names; keeping the first of each: "
+               + ", ".join(dups))
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
 
