@@ -204,7 +204,7 @@ def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
                      "median_actual_BOE": int(d[actc][m].median())})
     return pd.DataFrame(rows), float(ok.mean())
 
-st.set_page_config(page_title="Re-Frac Screening", page_icon="", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
@@ -387,7 +387,7 @@ st.markdown("""
     Re-Frac Candidate Screening
   </div>
   <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
   </div>
   <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
     Each well is scored by the best model for its basin. Dead and weak basins are excluded;
@@ -522,6 +522,7 @@ if crit_missing:
 
 # RED alert if any TOP5 feature is still absent from the data (after any matching)
 _top5_missing = [c for c in TOP5 if c not in df_raw.columns]
+st.session_state.top5_missing = _top5_missing
 if _top5_missing:
     st.error("PREDICTION NOT VALID - these top-5 critical features are missing from the data: **"
              + ", ".join(_top5_missing) + "**. The model depends on them, so any scores produced "
@@ -607,6 +608,13 @@ if st.session_state.get("ranked") is not None:
             st.dataframe(dropped[dshow], width='stretch', hide_index=True)
             st.download_button("Download dropped wells", dropped.to_csv(index=False).encode("utf-8"),
                                file_name="dropped_wells.csv", mime="text/csv")
+    # RED banner repeated here so it can't be missed next to the results
+    _t5m = st.session_state.get("top5_missing", [])
+    if _t5m:
+        st.error("PREDICTION NOT VALID - the data is missing top-5 critical feature(s): **"
+                 + ", ".join(_t5m) + "**. These scores are filled with placeholder values and "
+                 "should not be trusted. Add or match these columns, then re-run.")
+
     # summary metric cards
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
     m1, m2, m3, m4 = st.columns(4)
