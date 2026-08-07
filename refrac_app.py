@@ -532,25 +532,52 @@ if st.button("Run screening", type="primary"):
         n_recent = int(recent_mask.sum())
         if recent_action == "Remove from results":
             if n_recent:
-                st.warning(f"WARNING - removed {n_recent} well(s) re-fraced within the last "
-                           f"{recent_years} years (a repeat re-frac may not make sense yet).")
                 recent_removed = ranked[recent_mask].copy()
                 ranked = ranked[~recent_mask].copy()
                 ranked["rank"] = ranked["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
                 ranked = ranked.sort_values("rank").reset_index(drop=True)
+                st.session_state.recent_removed = recent_removed
+            else:
+                st.session_state.recent_removed = None
+            st.session_state.recent_flagged_n = n_recent
+        else:  # Flag only
+            ranked["recently_refraced"] = recent_mask
+            st.session_state.recent_removed = None
+            st.session_state.recent_flagged_n = n_recent
+    else:
+        st.session_state.recent_removed = None
+        st.session_state.recent_flagged_n = 0
+    # persist results so filter widgets don't wipe them on rerun
+    st.session_state.ranked = ranked
+    st.session_state.dropped = dropped
+    st.session_state.recent_action_used = recent_action if recent_years > 0 else None
+    st.session_state.recent_years_used = recent_years
+
+# ---- results (from session_state, survives widget reruns) ----
+if st.session_state.get("ranked") is not None:
+    ranked = st.session_state.ranked
+    dropped = st.session_state.dropped
+    n_recent = st.session_state.get("recent_flagged_n", 0)
+    recent_removed = st.session_state.get("recent_removed")
+    _raction = st.session_state.get("recent_action_used")
+    _ryears = st.session_state.get("recent_years_used", 0)
+    if _raction == "Remove from results":
+        if n_recent:
+            st.warning(f"WARNING - removed {n_recent} well(s) re-fraced within the last "
+                       f"{_ryears} years (a repeat re-frac may not make sense yet).")
+            if recent_removed is not None:
                 with st.expander(f"See the {n_recent} removed (recently re-fraced) wells"):
                     rshow = [c for c in ["well_API14","API14","ENVBasin","refrac_date","job_year"] if c in recent_removed.columns]
                     st.dataframe(recent_removed[rshow], width='stretch', hide_index=True)
-            else:
-                st.caption(f"No wells re-fraced within the last {recent_years} years.")
-        else:  # Flag only
-            ranked["recently_refraced"] = recent_mask
-            if n_recent:
-                st.warning(f"WARNING - {n_recent} well(s) were re-fraced within the last {recent_years} "
-                           f"years and are flagged (recently_refraced = True) but kept in the list. "
-                           f"A repeat re-frac may not make sense yet - review before acting.")
-            else:
-                st.caption(f"No wells re-fraced within the last {recent_years} years.")
+        else:
+            st.caption(f"No wells re-fraced within the last {_ryears} years.")
+    elif _raction == "Flag only":
+        if n_recent:
+            st.warning(f"WARNING - {n_recent} well(s) were re-fraced within the last {_ryears} "
+                       f"years and are flagged (recently_refraced = True) but kept in the list. "
+                       f"A repeat re-frac may not make sense yet - review before acting.")
+        else:
+            st.caption(f"No wells re-fraced within the last {_ryears} years.")
     if len(dropped):
         counts = dropped.groupby(["drop_reason","ENVBasin"]).size()
         lines = "\n".join(f"- {basin} ({reason}): {n} well(s)" for (reason, basin), n in counts.items())
