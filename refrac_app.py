@@ -204,7 +204,7 @@ def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
                      "median_actual_BOE": int(d[actc][m].median())})
     return pd.DataFrame(rows), float(ok.mean())
 
-st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening", page_icon="", layout="wide")
 
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
@@ -387,7 +387,7 @@ st.markdown("""
     Re-Frac Candidate Screening
   </div>
   <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
   </div>
   <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
     Each well is scored by the best model for its basin. Dead and weak basins are excluded;
