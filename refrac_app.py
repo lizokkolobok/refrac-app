@@ -361,7 +361,7 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
     dropped = out[remove_mask].copy()
     dropped["drop_reason"] = np.where(basin[remove_mask].isin(DEAD_BASINS), "dead basin", "weak basin")
     out = out[~remove_mask].copy()
-    out["rank"] = out["pred_central_p50"].rank(ascending=False, method="first").astype(int)
+    out["rank"] = out["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
     out = out.sort_values("rank").reset_index(drop=True)
     return out, dropped
 
@@ -536,7 +536,7 @@ if st.button("Run screening", type="primary"):
                            f"{recent_years} years (a repeat re-frac may not make sense yet).")
                 recent_removed = ranked[recent_mask].copy()
                 ranked = ranked[~recent_mask].copy()
-                ranked["rank"] = ranked["pred_central_p50"].rank(ascending=False, method="first").astype(int)
+                ranked["rank"] = ranked["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
                 ranked = ranked.sort_values("rank").reset_index(drop=True)
                 with st.expander(f"See the {n_recent} removed (recently re-fraced) wells"):
                     rshow = [c for c in ["well_API14","API14","ENVBasin","refrac_date","job_year"] if c in recent_removed.columns]
@@ -575,13 +575,41 @@ if st.button("Run screening", type="primary"):
 
     st.subheader("Top candidates")
 
-    # basin filter on the results
-    if "ENVBasin" in ranked.columns:
-        basin_opts = ["All basins"] + sorted(ranked["ENVBasin"].dropna().unique())
-        fbasin = st.selectbox("Filter by basin", basin_opts, key="result_basin")
-        view = ranked if fbasin == "All basins" else ranked[ranked["ENVBasin"] == fbasin]
-    else:
-        view = ranked
+    # ---- result filters ----
+    fc1, fc2, fc3 = st.columns([1.2, 1.2, 1.6])
+    with fc1:
+        if "ENVBasin" in ranked.columns:
+            basin_opts = ["All basins"] + sorted(ranked["ENVBasin"].dropna().unique())
+            fbasin = st.selectbox("Basin", basin_opts, key="result_basin")
+        else:
+            fbasin = "All basins"
+    with fc2:
+        op_col = next((c for c in ["operator", "Operator", "ENVOperator"] if c in ranked.columns), None)
+        if op_col:
+            op_opts = ["All operators"] + sorted(ranked[op_col].dropna().astype(str).unique())
+            fop = st.selectbox("Operator", op_opts, key="result_operator")
+        else:
+            fop = "All operators"
+    with fc3:
+        api_col = next((c for c in ["well_API14", "API14", "api10"] if c in ranked.columns), None)
+        api_query = st.text_input("Search well API", "", key="api_search",
+                                  placeholder="e.g. 3305304904") if api_col else ""
+
+    min_prob = st.slider("Min probability of exceeding breakeven", 0.0, 1.0, 0.0, 0.05,
+                         help="Hide wells below this probability. 0 shows everything.")
+    only_profitable = st.checkbox("Only profitable wells (expected profit > 0)", value=False)
+
+    view = ranked
+    if fbasin != "All basins":
+        view = view[view["ENVBasin"] == fbasin]
+    if op_col and fop != "All operators":
+        view = view[view[op_col].astype(str) == fop]
+    if api_col and api_query.strip():
+        view = view[view[api_col].astype(str).str.contains(api_query.strip(), na=False)]
+    if min_prob > 0 and "prob_exceeds_breakeven" in view.columns:
+        view = view[view["prob_exceeds_breakeven"] >= min_prob]
+    if only_profitable and "expected_profit_USD" in view.columns:
+        view = view[view["expected_profit_USD"] > 0]
 
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
                         "pred_central_p50", "prob_exceeds_breakeven", "expected_profit_USD",
@@ -613,6 +641,30 @@ if st.button("Run screening", type="primary"):
     st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
+
+    # ---- portfolio calculator ----
+    st.subheader("Portfolio calculator")
+    st.caption("If you re-frac the top N wells from the filtered list above, what does the "
+               "portfolio look like?")
+    pc1, pc2 = st.columns([1, 2.4])
+    with pc1:
+        port_n = st.number_input("Re-frac the top", 1, max(1, len(view)), min(20, max(1, len(view))),
+                                 step=5, key="port_n")
+    port = view.head(int(port_n))
+    total_cost = int(port_n) * REFRAC_COST_USD
+    exp_profit = float(port["expected_profit_USD"].sum()) if "expected_profit_USD" in port.columns else 0.0
+    exp_uplift = float(port["pred_central_p50"].sum()) if "pred_central_p50" in port.columns else 0.0
+    n_confident = int((port["prob_exceeds_breakeven"] >= 0.5).sum()) if "prob_exceeds_breakeven" in port.columns else 0
+    with pc2:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Total cost", f"${total_cost/1e6:,.1f}M")
+        k2.metric("Expected profit", f"${exp_profit/1e6:,.1f}M")
+        k3.metric("Expected uplift", f"{exp_uplift:,.0f} BOE")
+        k4.metric("Wells with prob >= 50%", f"{n_confident} / {int(port_n)}")
+    if "expected_profit_USD" in port.columns and port_n > 0:
+        roi = exp_profit / total_cost * 100 if total_cost else 0
+        st.caption(f"Expected portfolio ROI: {roi:,.0f}%  (expected profit / total cost; "
+                   f"based on P50 central estimates and ${REFRAC_COST_USD:,.0f} per re-frac)")
 
     # column legend
     with st.expander("What do these columns mean?"):
