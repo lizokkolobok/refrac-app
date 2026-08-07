@@ -249,7 +249,7 @@ def calib_prob_for_wells(ranked):
         out.append(tbl.get(bsn, {}).get(bkt, np.nan))
     return pd.Series(out, index=ranked.index)
 
-st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide")
 
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
@@ -432,7 +432,7 @@ st.markdown("""
     Re-Frac Candidate Screening
   </div>
   <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
   </div>
   <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
     Each well is scored by the best model for its basin. Dead and weak basins are excluded;
@@ -468,8 +468,7 @@ with st.sidebar:
                             help="Weak basins have some uplift but <=2% of wells clear breakeven. "
                                  "Uncheck to keep them in the results.")
     st.caption("A basin is 'weak' when 2% or fewer of its wells clear breakeven - so there's almost "
-               "nothing worth screening. Basins with a low median but a meaningful share of successes "
-               "(e.g. Permian, Delaware) are kept, since the model exists to find those wells.")
+               "nothing worth screening")
     st.markdown("---")
     st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
                 f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
