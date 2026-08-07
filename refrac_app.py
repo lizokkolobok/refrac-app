@@ -279,7 +279,7 @@ def add_eng(df):
     df["eng_decline_ratio"] = _num(df, "last6_oil_rate") / (_num(df, "last12_oil_rate") + 1)
     df["eng_gas_fraction"] = _num(df, "cum_gas_at_refrac") / (_num(df, "cum_oil_at_refrac") * 6 + _num(df, "cum_gas_at_refrac") + 1)
     df["eng_proppant_per_perf"] = _num(df, "Proppant_LBS") / (_num(df, "PerfInterval_FT") + 1)
-    return df.replace([np.inf, -np.inf], np.nan)
+    return df.replace([np.inf, -np.inf], np.nan).infer_objects(copy=False)
 
 def build_features(df):
     if df.columns.duplicated().any():                 # guard: keep first of any duplicate
@@ -693,7 +693,7 @@ if st.session_state.get("ranked") is not None:
     lon_col = next((c for c in ["lon", "Longitude", "SurfaceLongitude"] if c in view.columns), None)
     if lat_col and lon_col:
         st.subheader("Well map")
-        mp = view.copy()
+        mp = view.loc[:, ~view.columns.duplicated()].copy()
         mp["_lat"] = pd.to_numeric(mp[lat_col], errors="coerce")
         mp["_lon"] = pd.to_numeric(mp[lon_col], errors="coerce")
         mp = mp.dropna(subset=["_lat", "_lon"])
