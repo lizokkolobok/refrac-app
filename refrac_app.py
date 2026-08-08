@@ -259,7 +259,7 @@ st.markdown("""
   --panel: #edf4fa;
   --teal: #090d73;
   --teal-dark: #edf4fa;
-  --teal-soft: #edf4fa;
+  --teal-soft: #090d73;
   --text: #1F2A2E;
   --muted: #5F6E73;
   --line: #DCE4E6;
