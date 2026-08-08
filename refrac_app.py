@@ -257,9 +257,9 @@ st.markdown("""
 :root {
   --bg: #fffbeb;
   --panel: #edf4fa;
-  --teal: #4073a3;
-  --teal-dark: #4073a3;
-  --teal-soft: #083157;
+  --teal: #090D73;
+  --teal-dark: #090D73;
+  --teal-soft: #090D73;
   --text: #1F2A2E;
   --muted: #5F6E73;
   --line: #DCE4E6;
@@ -443,7 +443,7 @@ st.markdown("""
               margin: .9rem 0 .8rem 0;"></div>
   <div style="font-size: 1rem; color: #C6D4F0; font-weight: 400; max-width: 640px;
               line-height: 1.5;">
-    Иasin-aware model that ranks wells by their predicted re-frac uplift and the
+    Basin-aware model that ranks wells by their predicted re-frac uplift and the
     probability of clearing breakeven.
   </div>
 </div>
