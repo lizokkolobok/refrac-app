@@ -425,7 +425,7 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
 
 # ----------------------------- UI -----------------------------
 st.markdown("""
-<div style="background: linear-gradient(135deg, #8db8e0 0%, #8db8e0 100%);
+<div style="background: linear-gradient(135deg, #090d73 0%, #090d73 100%);
             padding: 1.6rem 1.8rem; border-radius: 12px; margin-bottom: 1.4rem;
             box-shadow: 0 2px 8px rgba(15,118,110,0.15);">
   <div style="font-size: 1.9rem; font-weight: 700; color: #FFFFFF; letter-spacing: .3px;">
