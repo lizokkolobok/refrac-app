@@ -257,7 +257,7 @@ st.markdown("""
 :root {
   --bg: #fffbeb;
   --panel: #edf4fa;
-  --teal: #083157;
+  --teal: #4073a3;
   --teal-dark: #4073a3;
   --teal-soft: #083157;
   --text: #1F2A2E;
