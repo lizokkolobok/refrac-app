@@ -425,18 +425,26 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
 
 # ----------------------------- UI -----------------------------
 st.markdown("""
-<div style="background: linear-gradient(135deg, #090d73 0%, #090d73 100%);
-            padding: 1.6rem 1.8rem; border-radius: 12px; margin-bottom: 1.4rem;
-            box-shadow: 0 2px 8px rgba(15,118,110,0.15);">
-  <div style="font-size: 1.9rem; font-weight: 700; color: #FFFFFF; letter-spacing: .3px;">
-    Re-Frac Candidate Screening
+<div style="background: #090D73; padding: 2rem 2.2rem; border-radius: 14px;
+            margin-bottom: 1.6rem; box-shadow: 0 4px 22px rgba(9,13,115,0.28);
+            position: relative; overflow: hidden;">
+  <div style="position:absolute; left:0; top:0; width:5px; height:100%; background:#5EC8D8;"></div>
+  <div style="position:absolute; top:0; right:0; width:200px; height:100%;
+              background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(94,200,216,0.08) 100%);"></div>
+  <div style="font-size: .72rem; font-weight: 600; color: #7FB0E8; letter-spacing: 2.5px;
+              text-transform: uppercase; margin-bottom: .5rem;">
+    Re-Frac Analytics
   </div>
-  <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+  <div style="font-family: Georgia, 'Times New Roman', serif; font-size: 2.3rem;
+              font-weight: 700; color: #FFFFFF; line-height: 1.1;">
+    Candidate Screening
   </div>
-  <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
-    Each well is scored by the best model for its basin. Dead and weak basins are excluded;
-    selected basins use their own model; the rest use the national model.
+  <div style="width: 46px; height: 3px; background: #5EC8D8; border-radius: 2px;
+              margin: .9rem 0 .8rem 0;"></div>
+  <div style="font-size: 1rem; color: #C6D4F0; font-weight: 400; max-width: 640px;
+              line-height: 1.5;">
+    Иasin-aware model that ranks wells by their predicted re-frac uplift and the
+    probability of clearing breakeven.
   </div>
 </div>
 """, unsafe_allow_html=True)
