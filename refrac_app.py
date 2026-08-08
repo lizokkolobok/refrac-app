@@ -257,8 +257,8 @@ st.markdown("""
 :root {
   --bg: #fffbeb;
   --panel: #edf4fa;
-  --teal: #4f53c9;
-  --teal-dark: #edf4fa;
+  --teal: #edf4fa;
+  --teal-dark: #090D73;
   --teal-soft: #090d73;
   --text: #1F2A2E;
   --muted: #5F6E73;
@@ -280,7 +280,7 @@ h1 { border-bottom: 3px solid var(--teal); padding-bottom: .35rem; }
 [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 8px; }
 [data-testid="stExpander"] { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 /* subtle teal tint on sidebar headers */
-section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color: var(--teal); }
+section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color: var(--teal-dark); }
 [data-testid="stAlert"] { border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
