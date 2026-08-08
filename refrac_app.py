@@ -24,7 +24,7 @@ NATIONAL_PATH = os.path.join(HERE, "national_model_v2_1.joblib")
 BASIN_DIR = os.path.join(HERE, "basin_models")
 SHORTLIST_PATH = os.path.join(HERE, "national_shortlist_v2_1.csv")   # historical data for the calibration table
 
-# ---- CONFIG (edit based on the OOF comparison summary) ----------------------
+# ---- CONFIG ----------------------
 OWN_MODEL_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
 # Basins where the dedicated basin model beats the national model out-of-fold.
 # (Delaware excluded: basin wins by only +0.006 ROC on 168 wells - within noise, national safer.
@@ -44,7 +44,7 @@ CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
 # TOP5 most important input features - if any is missing, the prediction is NOT valid.
 TOP5 = ["last12_oil_rate", "last6_oil_rate", "peak_oil", "cum_oil_at_refrac", "Proppant_LBS"]
 
-# ---- feature lists (match the training notebook) ----------------------------
+# ---- feature lists ----------------------------
 STRUCTURAL = ["well_age_yrs", "job_year", "refrac_seq", "well_n_refracs",
               "tvd_ft", "frac_water_bbl", "is_injector",
               "dist_nearest_ft", "n_offsets_660ft", "n_offsets_1320ft",
@@ -255,9 +255,9 @@ st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide
 st.markdown("""
 <style>
 :root {
-  --bg: #F7F9FA;
+  --bg: #f7f4be;
   --panel: #FFFFFF;
-  --teal: #0F766E;
+  --teal: #3aaff2;
   --teal-dark: #0B5850;
   --teal-soft: #E6F2F0;
   --text: #1F2A2E;
