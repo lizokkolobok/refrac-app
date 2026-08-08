@@ -255,8 +255,8 @@ st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide
 st.markdown("""
 <style>
 :root {
-  --bg: #fcfced;
-  --panel: #f5eed3;
+  --bg: #fffbeb;
+  --panel: #edf4fa;
   --teal: #75d7fa;
   --teal-dark: #75d7fa;
   --teal-soft: #75d7fa;
