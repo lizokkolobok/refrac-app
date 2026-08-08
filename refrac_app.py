@@ -249,7 +249,7 @@ def calib_prob_for_wells(ranked):
         out.append(tbl.get(bsn, {}).get(bkt, np.nan))
     return pd.Series(out, index=ranked.index)
 
-st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide")
+st.set_page_config(page_title="Re-Frac Screening (Hybrid)", page_icon="oil", layout="wide")
 
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
@@ -432,7 +432,7 @@ st.markdown("""
     Re-Frac Candidate Screening
   </div>
   <div style="font-size: 1rem; color: #C9E8E3; margin-top: .35rem; font-weight: 400;">
-    Basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
+    Hybrid basin-aware model &nbsp;·&nbsp; ranks wells by predicted re-frac uplift
   </div>
   <div style="font-size: .85rem; color: #A7D6CF; margin-top: .55rem;">
     Each well is scored by the best model for its basin. Dead and weak basins are excluded;
@@ -468,7 +468,8 @@ with st.sidebar:
                             help="Weak basins have some uplift but <=2% of wells clear breakeven. "
                                  "Uncheck to keep them in the results.")
     st.caption("A basin is 'weak' when 2% or fewer of its wells clear breakeven - so there's almost "
-               "nothing worth screening")
+               "nothing worth screening. Basins with a low median but a meaningful share of successes "
+               "(e.g. Permian, Delaware) are kept, since the model exists to find those wells.")
     st.markdown("---")
     st.markdown(f"**Economics:** ${REFRAC_COST_USD:,.0f} cost, ${PROFIT_PER_BOE_USD:.0f}/BOE "
                 f"-> breakeven {BREAKEVEN_BOE:,.0f} BOE")
@@ -704,6 +705,12 @@ if st.session_state.get("ranked") is not None:
                          help="Hide wells below this probability. 0 shows everything.")
     only_profitable = st.checkbox("Only profitable wells (expected profit > 0)", value=False)
 
+    sort_by = st.radio("Sort by",
+                       ["Probability of exceeding breakeven", "P50 (predicted uplift)", "Expected profit"],
+                       horizontal=True, index=0,
+                       help="Probability ranks real successes best (validated 0.99 vs 0.91 for P50, "
+                            "and it wins in every basin), so it's the default. Switch if you prefer.")
+
     view = ranked
     if fbasin != "All basins":
         view = view[view["ENVBasin"] == fbasin]
@@ -715,6 +722,14 @@ if st.session_state.get("ranked") is not None:
         view = view[view["prob_exceeds_breakeven"] >= min_prob]
     if only_profitable and "expected_profit_USD" in view.columns:
         view = view[view["expected_profit_USD"] > 0]
+
+    # apply the chosen sort
+    sort_col = {"Probability of exceeding breakeven": "prob_exceeds_breakeven",
+                "P50 (predicted uplift)": "pred_central_p50",
+                "Expected profit": "expected_profit_USD"}.get(sort_by)
+    if sort_col and sort_col in view.columns:
+        view = view.sort_values(sort_col, ascending=False).reset_index(drop=True)
+        view["rank"] = np.arange(1, len(view) + 1)
 
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
                         "pred_central_p50", "calib_prob_from_table",
