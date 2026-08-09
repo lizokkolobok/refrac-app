@@ -403,6 +403,9 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
     out["ENVBasin"] = basin
     out["prob_exceeds_breakeven"] = np.round(prob, 3)
     out["expected_profit_USD"] = np.round(p50 * PROFIT_PER_BOE_USD - REFRAC_COST_USD, 0)
+    # risk-adjusted profit: weight the upside by the probability of clearing breakeven,
+    # so a big P50 with a low probability is discounted vs a reliable smaller well.
+    out["risk_adjusted_profit_USD"] = np.round(prob * p50 * PROFIT_PER_BOE_USD - REFRAC_COST_USD, 0)
     out["pred_central_p50"] = np.round(p50, 0)
     out["band_low"] = np.round(lo, 0)
     out["band_high"] = np.round(hi, 0)
@@ -713,7 +716,8 @@ if st.session_state.get("ranked") is not None:
     only_profitable = st.checkbox("Only profitable wells (expected profit > 0)", value=False)
 
     sort_by = st.radio("Sort by",
-                       ["Probability of exceeding breakeven", "P50 (predicted uplift)", "Expected profit"],
+                       ["Probability of exceeding breakeven", "P50 (predicted uplift)",
+                        "Expected profit", "Risk-adjusted profit"],
                        horizontal=True, index=0,
                        help="Probability ranks real successes best (validated 0.99 vs 0.91 for P50, "
                             "and it wins in every basin), so it's the default. Switch if you prefer.")
@@ -733,14 +737,15 @@ if st.session_state.get("ranked") is not None:
     # apply the chosen sort
     sort_col = {"Probability of exceeding breakeven": "prob_exceeds_breakeven",
                 "P50 (predicted uplift)": "pred_central_p50",
-                "Expected profit": "expected_profit_USD"}.get(sort_by)
+                "Expected profit": "expected_profit_USD",
+                "Risk-adjusted profit": "risk_adjusted_profit_USD"}.get(sort_by)
     if sort_col and sort_col in view.columns:
         view = view.sort_values(sort_col, ascending=False).reset_index(drop=True)
         view["rank"] = np.arange(1, len(view) + 1)
 
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
                         "pred_central_p50", "calib_prob_from_table",
-                        "prob_exceeds_breakeven", "expected_profit_USD",
+                        "prob_exceeds_breakeven", "expected_profit_USD", "risk_adjusted_profit_USD",
                         "relative_uncertainty", "recently_refraced"]
             if c in view.columns]
     top = view.head(int(top_n))
@@ -755,11 +760,14 @@ if st.session_state.get("ranked") is not None:
             sty = sty.background_gradient(subset=["calib_prob_from_table"], cmap="RdYlGn", vmin=0, vmax=1)
         if "expected_profit_USD" in show:
             sty = sty.background_gradient(subset=["expected_profit_USD"], cmap="RdYlGn")
+        if "risk_adjusted_profit_USD" in show:
+            sty = sty.background_gradient(subset=["risk_adjusted_profit_USD"], cmap="RdYlGn")
         if "relative_uncertainty" in show:
             sty = sty.background_gradient(subset=["relative_uncertainty"], cmap="RdYlGn_r")
         fmt = {}
         if "pred_central_p50" in show:       fmt["pred_central_p50"] = "{:,.0f}"
         if "expected_profit_USD" in show:    fmt["expected_profit_USD"] = "${:,.0f}"
+        if "risk_adjusted_profit_USD" in show: fmt["risk_adjusted_profit_USD"] = "${:,.0f}"
         if "prob_exceeds_breakeven" in show: fmt["prob_exceeds_breakeven"] = "{:.0%}"
         if "calib_prob_from_table" in show:   fmt["calib_prob_from_table"] = "{:.0%}"
         if "relative_uncertainty" in show:   fmt["relative_uncertainty"] = "{:.2f}"
@@ -772,6 +780,42 @@ if st.session_state.get("ranked") is not None:
     st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
+
+    # ---- size x reliability matrix (quadrants) ----
+    if {"pred_central_p50", "prob_exceeds_breakeven"}.issubset(view.columns) and len(view) >= 4:
+        st.subheader("Size vs reliability matrix")
+        p50_cut = float(view["pred_central_p50"].median())
+        PROB_CUT = 0.5
+        big  = view["pred_central_p50"] >= p50_cut
+        sure = view["prob_exceeds_breakeven"] >= PROB_CUT
+        n_star   = int((big & sure).sum())      # big + likely
+        n_risky  = int((big & ~sure).sum())     # big + unlikely
+        n_steady = int((~big & sure).sum())     # small + likely
+        n_skip   = int((~big & ~sure).sum())    # small + unlikely
+        st.caption(f"Split by median P50 (${p50_cut:,.0f} BOE) and 50% probability. "
+                   f"Each well falls into one of four types:")
+        q1, q2 = st.columns(2)
+        with q1:
+            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; margin-bottom:.5rem; background:#EAF6EA;">
+<b>&#11088; Stars &mdash; {n_star} wells</b><br><span style="font-size:.85rem;">High P50 &amp; high probability. Big and likely &mdash; drill these first.</span></div>""",
+                        unsafe_allow_html=True)
+            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; background:#EDF3FA;">
+<b>&#128737; Steady &mdash; {n_steady} wells</b><br><span style="font-size:.85rem;">Low P50 but high probability. Reliable but modest upside.</span></div>""",
+                        unsafe_allow_html=True)
+        with q2:
+            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; margin-bottom:.5rem; background:#FBF5E7;">
+<b>&#127920; Risky bets &mdash; {n_risky} wells</b><br><span style="font-size:.85rem;">High P50 but low probability. Big potential, but the classifier doubts it.</span></div>""",
+                        unsafe_allow_html=True)
+            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; background:#F6ECEC;">
+<b>&#10060; Skip &mdash; {n_skip} wells</b><br><span style="font-size:.85rem;">Low P50 and low probability. Little reason to re-frac.</span></div>""",
+                        unsafe_allow_html=True)
+        # add the quadrant label as a downloadable column
+        def _quad(r):
+            b = r["pred_central_p50"] >= p50_cut; s = r["prob_exceeds_breakeven"] >= PROB_CUT
+            return ("Star" if b and s else "Risky bet" if b and not s
+                    else "Steady" if not b and s else "Skip")
+        view = view.copy()
+        view["quadrant"] = view.apply(_quad, axis=1)
 
     # ---- well map (if coordinates are present) ----
     lat_col = next((c for c in ["lat", "Latitude", "SurfaceLatitude"] if c in view.columns), None)
@@ -839,6 +883,7 @@ if st.session_state.get("ranked") is not None:
 - **calib_prob_from_table** - historical success rate for wells in the same basin and P50 range (from the calibration table). Blank if that basin/range has too few historical wells.
 - **prob_exceeds_breakeven** - probability the well clears the breakeven threshold (10,000 BOE).
 - **expected_profit_USD** - P50 x $40 per BOE, minus the $400,000 re-frac cost.
+- **risk_adjusted_profit_USD** - the same profit but weighted by the probability of clearing breakeven (probability x P50 x $40 - $400,000). Discounts big-but-unlikely wells; use it to compare a large risky well against a smaller reliable one.
 - **relative_uncertainty** - interval width divided by P50; smaller = more confident. Comparable across wells of any size.
 - **model_used** - which model scored the well: the national model, or a basin's own model.
 - **recently_refraced** - flagged if the last re-frac was within the chosen window (a repeat may not make sense yet).
