@@ -870,6 +870,33 @@ if st.session_state.get("ranked") is not None:
         # add matrix labels as downloadable columns
         v["size_bucket"] = v["_size"]
         v["prob_agreement"] = v["_agree"]
+
+        # let the user inspect which wells sit in any cell
+        st.markdown("**See the wells in a cell**")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            pick_size = st.selectbox("Size (P50)", ["High P50", "Mid P50", "Low P50"],
+                                     key="mx_size")
+        with cc2:
+            pick_row = st.selectbox("Probability agreement",
+                                    ["Both say likely", "Estimates disagree", "Both say unlikely"],
+                                    key="mx_row")
+        size_key = {"Low P50": "low", "Mid P50": "mid", "High P50": "high"}[pick_size]
+        row_key  = {"Both say likely": "likely", "Estimates disagree": "disagree",
+                    "Both say unlikely": "unlikely"}[pick_row]
+        cell = v[(v["_size"] == size_key) & (v["_agree"] == row_key)]
+        st.caption(f"{len(cell)} well(s) in '{pick_size} x {pick_row}'")
+        if len(cell):
+            cell_cols = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
+                                     "signals", "pred_central_p50", "calib_prob_from_table",
+                                     "prob_exceeds_breakeven", "expected_profit_USD",
+                                     "risk_adjusted_profit_USD"] if c in cell.columns]
+            st.dataframe(cell[cell_cols], width='stretch', hide_index=True)
+            st.download_button(f"Download these {len(cell)} wells",
+                               cell.to_csv(index=False).encode("utf-8"),
+                               file_name=f"matrix_{size_key}_{row_key}.csv", mime="text/csv",
+                               key="mx_dl")
+
         view = v.drop(columns=["_size", "_agree"])
 
     # ---- well map (if coordinates are present) ----
