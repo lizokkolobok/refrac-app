@@ -629,6 +629,20 @@ if st.button("Run screening", type="primary"):
     cp = calib_prob_for_wells(ranked)
     if cp is not None:
         ranked["calib_prob_from_table"] = cp.round(2)
+    # traffic-light signals: P50 size, classifier probability, calibration-table probability.
+    # green = strong, yellow = middling, red = weak, grey = no data. One glance covers all three.
+    def _light_p50(x):
+        if pd.isna(x): return "\u26AA"
+        return "\U0001F534" if x < BREAKEVEN_BOE else ("\U0001F7E1" if x < 2 * BREAKEVEN_BOE else "\U0001F7E2")
+    def _light_prob(x):
+        if pd.isna(x): return "\u26AA"
+        return "\U0001F534" if x < 0.4 else ("\U0001F7E1" if x < 0.7 else "\U0001F7E2")
+    _p50 = pd.to_numeric(ranked.get("pred_central_p50"), errors="coerce")
+    _clf = pd.to_numeric(ranked.get("prob_exceeds_breakeven"), errors="coerce")
+    _cal = pd.to_numeric(ranked.get("calib_prob_from_table"), errors="coerce") \
+           if "calib_prob_from_table" in ranked.columns else pd.Series(np.nan, index=ranked.index)
+    ranked["signals"] = [f"{_light_p50(a)}{_light_prob(b)}{_light_prob(c)}"
+                         for a, b, c in zip(_p50, _clf, _cal)]
     # persist results so filter widgets don't wipe them on rerun
     st.session_state.ranked = ranked
     st.session_state.dropped = dropped
@@ -743,7 +757,7 @@ if st.session_state.get("ranked") is not None:
         view = view.sort_values(sort_col, ascending=False).reset_index(drop=True)
         view["rank"] = np.arange(1, len(view) + 1)
 
-    show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
+    show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used", "signals",
                         "pred_central_p50", "calib_prob_from_table",
                         "prob_exceeds_breakeven", "expected_profit_USD", "risk_adjusted_profit_USD",
                         "relative_uncertainty", "recently_refraced"]
@@ -781,41 +795,82 @@ if st.session_state.get("ranked") is not None:
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
 
-    # ---- size x reliability matrix (quadrants) ----
-    if {"pred_central_p50", "prob_exceeds_breakeven"}.issubset(view.columns) and len(view) >= 4:
-        st.subheader("Size vs reliability matrix")
-        p50_cut = float(view["pred_central_p50"].median())
+    # ---- 3x3 matrix: P50 size  x  agreement of the two probabilities ----
+    if {"pred_central_p50", "prob_exceeds_breakeven"}.issubset(view.columns) and len(view) >= 3:
+        st.subheader("Size vs reliability matrix (3x3)")
+        st.caption("Columns = predicted size (P50, split into low / mid / high thirds). "
+                   "Rows = how the two probability estimates (classifier and calibration table) agree. "
+                   "The best wells are top-right (big and both estimates say likely); the trickiest "
+                   "are the middle row on the right (big, but the two estimates disagree).")
+
+        v = view.copy()
+        p50 = pd.to_numeric(v["pred_central_p50"], errors="coerce")
+        clf = pd.to_numeric(v["prob_exceeds_breakeven"], errors="coerce")
+        cal = pd.to_numeric(v.get("calib_prob_from_table"), errors="coerce") \
+              if "calib_prob_from_table" in v.columns else pd.Series(np.nan, index=v.index)
+
+        # size thirds by P50 terciles
+        try:
+            q33, q66 = p50.quantile([1/3, 2/3])
+        except Exception:
+            q33 = q66 = p50.median()
+        def size_bucket(x):
+            if pd.isna(x): return "mid"
+            return "low" if x <= q33 else ("high" if x > q66 else "mid")
+
+        # agreement of the two probabilities (relative to the 50% breakeven line)
         PROB_CUT = 0.5
-        big  = view["pred_central_p50"] >= p50_cut
-        sure = view["prob_exceeds_breakeven"] >= PROB_CUT
-        n_star   = int((big & sure).sum())      # big + likely
-        n_risky  = int((big & ~sure).sum())     # big + unlikely
-        n_steady = int((~big & sure).sum())     # small + likely
-        n_skip   = int((~big & ~sure).sum())    # small + unlikely
-        st.caption(f"Split by median P50 (${p50_cut:,.0f} BOE) and 50% probability. "
-                   f"Each well falls into one of four types:")
-        q1, q2 = st.columns(2)
-        with q1:
-            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; margin-bottom:.5rem; background:#EAF6EA;">
-<b>&#11088; Stars &mdash; {n_star} wells</b><br><span style="font-size:.85rem;">High P50 &amp; high probability. Big and likely &mdash; drill these first.</span></div>""",
-                        unsafe_allow_html=True)
-            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; background:#EDF3FA;">
-<b>&#128737; Steady &mdash; {n_steady} wells</b><br><span style="font-size:.85rem;">Low P50 but high probability. Reliable but modest upside.</span></div>""",
-                        unsafe_allow_html=True)
-        with q2:
-            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; margin-bottom:.5rem; background:#FBF5E7;">
-<b>&#127920; Risky bets &mdash; {n_risky} wells</b><br><span style="font-size:.85rem;">High P50 but low probability. Big potential, but the classifier doubts it.</span></div>""",
-                        unsafe_allow_html=True)
-            st.markdown(f"""<div style="border:1px solid #BBD; border-radius:8px; padding:.7rem 1rem; background:#F6ECEC;">
-<b>&#10060; Skip &mdash; {n_skip} wells</b><br><span style="font-size:.85rem;">Low P50 and low probability. Little reason to re-frac.</span></div>""",
-                        unsafe_allow_html=True)
-        # add the quadrant label as a downloadable column
-        def _quad(r):
-            b = r["pred_central_p50"] >= p50_cut; s = r["prob_exceeds_breakeven"] >= PROB_CUT
-            return ("Star" if b and s else "Risky bet" if b and not s
-                    else "Steady" if not b and s else "Skip")
-        view = view.copy()
-        view["quadrant"] = view.apply(_quad, axis=1)
+        def agree_bucket(pc, pcal):
+            hi_c = pc >= PROB_CUT
+            if pd.isna(pcal):                       # no table value -> fall back to the classifier
+                return "likely" if hi_c else "unlikely"
+            hi_t = pcal >= PROB_CUT
+            if hi_c and hi_t:   return "likely"     # both say yes
+            if (not hi_c) and (not hi_t): return "unlikely"  # both say no
+            return "disagree"                       # they conflict
+
+        v["_size"]  = p50.map(size_bucket)
+        v["_agree"] = [agree_bucket(c, t) for c, t in zip(clf, cal)]
+
+        sizes = ["low", "mid", "high"]
+        rows  = ["likely", "disagree", "unlikely"]
+        size_hdr = {"low": "Low P50", "mid": "Mid P50", "high": "High P50"}
+        row_hdr = {"likely": "Both say likely", "disagree": "Estimates disagree",
+                   "unlikely": "Both say unlikely"}
+        # background tint per row (green good, amber caution, grey skip)
+        row_bg = {"likely": "#EAF6EA", "disagree": "#FBF5E7", "unlikely": "#F1F1F3"}
+
+        counts = {(s, r): int(((v["_size"] == s) & (v["_agree"] == r)).sum())
+                  for s in sizes for r in rows}
+
+        # render as an HTML grid
+        html = ['<div style="display:grid; grid-template-columns:150px 1fr 1fr 1fr; gap:6px; align-items:stretch;">']
+        html.append('<div></div>')
+        for s in sizes:
+            html.append(f'<div style="text-align:center; font-weight:700; color:#090D73; '
+                        f'padding:.3rem;">{size_hdr[s]}</div>')
+        for r in rows:
+            html.append(f'<div style="font-weight:700; color:#090D73; display:flex; '
+                        f'align-items:center; padding:.3rem;">{row_hdr[r]}</div>')
+            for s in sizes:
+                n = counts[(s, r)]
+                strong = (r == "likely" and s == "high")
+                border = "2px solid #0F766E" if strong else "1px solid #D8DEE8"
+                html.append(
+                    f'<div style="background:{row_bg[r]}; border:{border}; border-radius:8px; '
+                    f'padding:1rem .5rem; text-align:center;">'
+                    f'<div style="font-size:1.5rem; font-weight:700; color:#1F2A2E;">{n}</div>'
+                    f'<div style="font-size:.72rem; color:#5F6E73;">wells</div></div>')
+        html.append('</div>')
+        st.markdown("".join(html), unsafe_allow_html=True)
+        st.caption("High P50 + both say likely = strongest candidates. "
+                   "High P50 + estimates disagree = the classifier and the historical table conflict; "
+                   "treat as a risky bet and look closer before acting.")
+
+        # add matrix labels as downloadable columns
+        v["size_bucket"] = v["_size"]
+        v["prob_agreement"] = v["_agree"]
+        view = v.drop(columns=["_size", "_agree"])
 
     # ---- well map (if coordinates are present) ----
     lat_col = next((c for c in ["lat", "Latitude", "SurfaceLatitude"] if c in view.columns), None)
@@ -879,6 +934,7 @@ if st.session_state.get("ranked") is not None:
     # column legend
     with st.expander("What do these columns mean?"):
         st.markdown("""
+- **signals** - three traffic lights at a glance: P50 size | classifier probability | calibration-table probability. Green = strong, yellow = middling, red = weak, grey = no data. Three greens = the strongest, most agreed-upon candidates.
 - **pred_central_p50** - the model's central estimate of uplift (barrels of oil equivalent).
 - **calib_prob_from_table** - historical success rate for wells in the same basin and P50 range (from the calibration table). Blank if that basin/range has too few historical wells.
 - **prob_exceeds_breakeven** - probability the well clears the breakeven threshold (10,000 BOE).
