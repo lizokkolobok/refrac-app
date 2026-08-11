@@ -865,10 +865,8 @@ if st.session_state.get("ranked") is not None:
         # explain WHY the probability thresholds are 40% and 70%
         with st.expander("Why the probability bands are 40% and 70%"):
             st.markdown("""
-The thresholds are not round numbers picked by hand - they come from where the model's
-predicted probability actually changes real-world behaviour, measured on 5,866 historical
-wells with known outcomes. Grouping those wells by predicted probability and checking how
-often they really cleared breakeven gives:
+The thresholds come from where the model's predicted probability actually changes real-world behaviour, measured on historical
+wells with known outcomes. Grouping those wells by predicted probability and checking how often they really cleared breakeven gives:
 
 | Predicted probability | Actually cleared breakeven |
 |---|---|
@@ -878,22 +876,9 @@ often they really cleared breakeven gives:
 | 60-80% | 86% |
 | 80-100% | 99% |
 
-Two natural break points stand out:
-
-- **40%** is where success jumps. Below it, wells almost never pay off (0-15% real success);
-at 40-60% real success leaps to 74%. So 40% is the line between "almost never works" and
-"works most of the time." Everything below 40% is the **low** band.
-- **70%** is where success becomes near-certain. From about 70% upward, real success sits at
-90-99% - effectively a safe bet. So 70% is the line between "likely" and "almost sure."
-Everything at or above 70% is the **high** band.
-
-The **middle band (40-70%)** is the genuine judgement zone: these wells clear breakeven often
-(roughly three times out of four) but not reliably, so they deserve a closer look rather than
-an automatic yes or no.
-
-One extra reason these bands are conservative in your favour: the model tends to *under-state*
+One extra reason these bands are conservative: the model tends to understate
 probability (a well it calls 45% really succeeds about 68% of the time), so a well landing in
-the high band is, if anything, even safer than the label suggests.
+the high band is safer than the label suggests.
 """)
 
         # add matrix labels as downloadable columns
