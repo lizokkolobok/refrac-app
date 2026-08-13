@@ -660,12 +660,6 @@ if _cal_df is not None:
         else:
             st.caption("Not enough labelled wells in this basin for a table.")
 
-uploaded = st.file_uploader("Upload wells CSV", type=["csv"])
-if uploaded is None:
-    st.info("Upload a CSV with one row per well, including an ENVBasin column. "
-            "Each well is scored by its basin's best model; dead basins are dropped automatically.")
-    st.stop()
-
 def _read_csv_resilient(f):
     """Read a CSV, tolerating malformed rows and odd delimiters.
     Returns (dataframe, note) where note describes any repair, or raises."""
@@ -698,15 +692,99 @@ def _read_csv_resilient(f):
     df = pd.read_csv(f, engine="python", sep=None, on_bad_lines="skip")
     return df, "File was read with automatic delimiter detection; check the columns look right."
 
-try:
-    df_raw, _read_note = _read_csv_resilient(uploaded)
-    if _read_note:
-        st.warning(_read_note)
-except Exception as e:
-    st.error(f"Could not read the CSV even after trying to repair it: {e}\n\n"
-             "The file may use an unusual format. Try re-saving it as a standard "
-             "comma-separated CSV (in Excel: Save As -> CSV UTF-8), then upload again.")
+def _norm_api(s):
+    """Normalise an API/UWI value to digits only, so files with different formats
+    (05-067-10028 vs 0506710028) merge correctly."""
+    import re
+    return pd.Series(s, dtype="object").map(lambda x: re.sub(r"\D", "", str(x)) if pd.notna(x) else "")
+
+def _api_col_of(df):
+    """Return the name of the API-like column in df, or None."""
+    for c in ["well_API14", "API14", "API", "api10", "well_api14", "UWI"]:
+        if c in df.columns:
+            return c
+    for c in df.columns:
+        lc = str(c).lower().strip()
+        if ("api" in lc or "uwi" in lc or lc == "entity") and "capital" not in lc:
+            return c
+    return None
+
+def _prep_one_file(uf):
+    """Read one uploaded file, roll it up if it's a monthly series, and return
+    (dataframe_one_row_per_well, label) or (None, reason)."""
+    df, note = _read_csv_resilient(uf)
+    if note:
+        st.caption(f":grey[{uf.name}: {note}]")
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+    # roll up a monthly series automatically (no checkbox in multi-file mode)
+    ser = detect_monthly_series(df)
+    if ser is not None:
+        rolled = rollup_monthly_to_wells(df, ser)
+        _bas = _find_col(df.columns, ["envbasin", "basin"])
+        if _bas:
+            fb = df.groupby(ser["api"])[_bas].first()
+            rolled["ENVBasin"] = rolled["well_API14"].map(fb.to_dict())
+        conv = " (daily averages converted to monthly)" if (ser.get("oil_is_daily") or ser.get("gas_is_daily")) else ""
+        st.caption(f":grey[{uf.name}: monthly series -> rolled up to {len(rolled):,} wells{conv}.]")
+        return rolled, uf.name
+    return df, uf.name
+
+uploaded_files = st.file_uploader(
+    "Upload one or more wells CSVs", type=["csv"], accept_multiple_files=True,
+    help="You can upload several files for the SAME wells (e.g. production, wellbore geometry, "
+         "frac/proppant). They'll be merged by API into one row per well.")
+if not uploaded_files:
+    st.info("Upload one or more CSVs. With several files for the same wells (production, geometry, "
+            "frac), the app merges them by API so all the model's features come together. "
+            "Monthly production series are rolled up automatically.")
     st.stop()
+
+# read + prepare each file, then merge them all on a normalised API key
+_prepared = []
+for uf in uploaded_files:
+    try:
+        d, label = _prep_one_file(uf)
+        if d is not None and len(d):
+            _prepared.append((d, label))
+    except Exception as e:
+        st.error(f"Could not read {uf.name}: {e}")
+
+if not _prepared:
+    st.error("None of the uploaded files could be read. Try re-saving as standard CSV (UTF-8).")
+    st.stop()
+
+if len(_prepared) == 1:
+    df_raw = _prepared[0][0]
+else:
+    # merge every file on a normalised API key (outer join keeps all wells)
+    merged = None
+    unkeyed = []
+    for d, label in _prepared:
+        akey = _api_col_of(d)
+        if akey is None:
+            unkeyed.append(label)
+            continue
+        d = d.copy()
+        d["_apikey"] = _norm_api(d[akey])
+        d = d[d["_apikey"] != ""]
+        d = d.drop_duplicates(subset="_apikey", keep="first")   # one row per well per file
+        if merged is None:
+            merged = d
+        else:
+            # only bring in columns the merged frame doesn't already have (avoid dup/_x/_y)
+            new_cols = ["_apikey"] + [c for c in d.columns if c not in merged.columns and c != "_apikey"]
+            merged = merged.merge(d[new_cols], on="_apikey", how="outer")
+    if merged is None:
+        st.error("Could not find an API column in any file, so they can't be merged. "
+                 "Make sure each file has an API (or UWI) column.")
+        st.stop()
+    if unkeyed:
+        st.warning("These files had no API column and were skipped in the merge: "
+                   + ", ".join(unkeyed))
+    df_raw = merged.drop(columns=["_apikey"])
+    st.success(f"Merged {len(_prepared)} files by API into {len(df_raw):,} wells "
+               f"with {df_raw.shape[1]} combined columns.")
 
 # drop duplicate column names (keep first) - duplicates break numeric conversion
 if df_raw.columns.duplicated().any():
@@ -714,47 +792,6 @@ if df_raw.columns.duplicated().any():
     df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
     st.warning("Your file has duplicate column names; keeping the first of each: "
                + ", ".join(dups))
-
-# ---- detect a raw monthly production series and offer to roll it up ----
-_series = detect_monthly_series(df_raw)
-if _series is not None:
-    st.info(f"This looks like a **monthly production series**: {_series['n_rows']:,} rows for "
-            f"{_series['n_wells']:,} wells (about {_series['n_rows']/_series['n_wells']:.0f} months "
-            f"each). The model needs one row per well, so I can roll it up and compute the "
-            f"production features (last12_oil_rate, cum_oil, peak_oil, etc.) automatically.")
-    if _series.get("oil_is_daily") or _series.get("gas_is_daily"):
-        st.caption(f"Detected daily-average columns (oil: '{_series['oil']}'"
-                   + (f", gas: '{_series['gas']}'" if _series.get('gas') else "")
-                   + "). These will be converted to monthly volume by multiplying by the number "
-                     "of days in each month.")
-    _has_refrac_date = _find_col(df_raw.columns, ["refrac_date", "refrac date", "job_date"])
-    st.warning("Two honest limits of an automatic roll-up:\n\n"
-               f"1. **No re-frac date** {'was found' if not _has_refrac_date else 'handling'}: "
-               "without a cut-off, the features are computed over the **entire** series "
-               "(so cum_oil / last-12 mean 'to date', not 'up to the re-frac'). "
-               "This shifts the numbers if the series extends past the re-frac.\n"
-               "2. **No completion geometry**: Proppant_LBS, PerfInterval_FT, frac_water_bbl, "
-               "TVD, lat/lon aren't in a production export, so they stay missing - and "
-               "Proppant_LBS is a top-5 feature, so predictions will still be flagged unreliable "
-               "until you add it from a completion file.")
-    if st.checkbox("Roll this monthly series up to one row per well", value=False,
-                   key="do_rollup"):
-        with st.spinner("Rolling up the monthly series..."):
-            rolled = rollup_monthly_to_wells(df_raw, _series)
-        # keep a basin column if the original had one (needed for routing)
-        _bas = _find_col(df_raw.columns, ["envbasin", "basin"])
-        if _bas:
-            first_basin = df_raw.groupby(_series["api"])[_bas].first()
-            rolled["ENVBasin"] = rolled["well_API14"].map(first_basin.to_dict())
-        df_raw = rolled
-        st.success(f"Rolled up to {len(df_raw):,} wells (one row each). "
-                   "Computed: last12_oil_rate, last6_oil_rate, peak_oil, cum_oil_at_refrac, "
-                   "cum_gas_at_refrac, months_on_prod_at_refrac, ip30_oil, ip90_oil.")
-        if not _bas:
-            st.warning("No ENVBasin column in the source, so every well will use the national "
-                       "model. Add ENVBasin for basin-aware routing.")
-    else:
-        st.stop()
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
 
