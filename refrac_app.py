@@ -350,19 +350,46 @@ def basin_calibration_prob(min_bucket=5):
             table[basin] = m
     return table, edges, labels
 
+@st.cache_data
+def national_calibration_prob(min_bucket=5):
+    """Basin-agnostic lookup: {bucket_label: success_fraction} over ALL wells in 5k buckets.
+    Used as a fallback when a well has no basin, or its basin isn't in the historical set."""
+    d, p50c, actc, basc = load_calibration_data()
+    if d is None:
+        return None, None, None
+    edges, labels = _cal_bins(float(d[p50c].max()))
+    d = d.copy()
+    d["_b"] = pd.cut(d[p50c], bins=edges, labels=labels)
+    d["_ok"] = (d[actc] >= BREAKEVEN_BOE).astype(int)
+    m = {}
+    for lab, gg in d.groupby("_b", observed=True):
+        if len(gg) >= min_bucket:
+            m[str(lab)] = float(gg["_ok"].mean())
+    return (m or None), edges, labels
+
 def calib_prob_for_wells(ranked):
-    """For each well, look up the historical success rate of its basin+P50 bucket."""
+    """For each well, look up the historical success rate of its basin+P50 bucket.
+    Falls back to the national (all-basins) rate for that P50 bucket when the basin is
+    missing or not in the historical set, so the column is populated for every well."""
     tbl, edges, labels = basin_calibration_prob()
-    if tbl is None:
+    nat, n_edges, n_labels = national_calibration_prob()
+    if tbl is None and nat is None:
         return None
-    basin = ranked["ENVBasin"].astype(str).str.upper().str.strip() if "ENVBasin" in ranked.columns else None
+    # use the national bins if the basin table is unavailable
+    use_edges = edges if edges is not None else n_edges
+    use_labels = labels if labels is not None else n_labels
+    if use_edges is None:
+        return None
+    basin = ranked["ENVBasin"].astype(str).str.upper().str.strip() \
+            if "ENVBasin" in ranked.columns else pd.Series([""] * len(ranked), index=ranked.index)
     p50 = pd.to_numeric(ranked.get("pred_central_p50"), errors="coerce")
-    if basin is None:
-        return None
-    buckets = pd.cut(p50, bins=edges, labels=labels).astype(str)
+    buckets = pd.cut(p50, bins=use_edges, labels=use_labels).astype(str)
     out = []
     for bsn, bkt in zip(basin, buckets):
-        out.append(tbl.get(bsn, {}).get(bkt, np.nan))
+        v = (tbl or {}).get(bsn, {}).get(bkt, np.nan)      # basin-specific first
+        if pd.isna(v) and nat is not None:                 # fall back to national rate
+            v = nat.get(bkt, np.nan)
+        out.append(v)
     return pd.Series(out, index=ranked.index)
 
 st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide")
@@ -734,8 +761,14 @@ st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
 # ---- infer ENVBasin from the API county code when no basin column is present ----
 _has_basin = "ENVBasin" in df_raw.columns and df_raw["ENVBasin"].notna().any()
 if not _has_basin:
+    # find any column whose name looks like an API/UWI (robust to spaces, case, suffixes)
+    def _looks_like_api(colname):
+        c = str(colname).lower().strip()
+        return ("api" in c or "uwi" in c or c == "entity") and "capital" not in c
     _api_for_basin = next((c for c in ["well_API14", "API14", "API", "api10", "well_api14", "UWI"]
                            if c in df_raw.columns), None)
+    if _api_for_basin is None:                       # fall back to a fuzzy name match
+        _api_for_basin = next((c for c in df_raw.columns if _looks_like_api(c)), None)
     if _api_for_basin:
         inferred = df_raw[_api_for_basin].map(lambda a: basin_from_api(a)[0])
         mixed = df_raw[_api_for_basin].map(lambda a: basin_from_api(a)[1])
@@ -757,8 +790,13 @@ if not _has_basin:
                         f"back to the national model.")
             st.info(msg)
         else:
-            st.warning("No basin column, and I couldn't infer any basin from the API county "
-                       "codes (unrecognised codes). Every well will use the national model.")
+            _sample = str(df_raw[_api_for_basin].dropna().iloc[0]) if df_raw[_api_for_basin].notna().any() else "?"
+            _code = "".join(ch for ch in _sample if ch.isdigit())[:5]
+            st.warning(f"Found an API column ('{_api_for_basin}'), but none of the county codes "
+                       f"matched the lookup (example code from your data: '{_code}'). These "
+                       f"counties aren't in the historical set, so every well will use the "
+                       f"national model. If '{_code}' looks wrong (e.g. not 5 digits), the API "
+                       f"format may differ.")
 
 # ---- renamed-column handling (suggest, user confirms) ----
 if "colmap" not in st.session_state:
@@ -851,6 +889,18 @@ if st.button("Run screening", type="primary"):
     cp = calib_prob_for_wells(ranked)
     if cp is not None:
         ranked["calib_prob_from_table"] = cp.round(2)
+        n_filled = int(cp.notna().sum())
+        if n_filled == 0:
+            st.session_state.calib_note = ("The calibration-table column is empty: the P50 values "
+                "didn't fall in any historical bucket with enough wells. The classifier probability "
+                "column is unaffected.")
+        else:
+            st.session_state.calib_note = None
+    else:
+        # no calibration data available at all (shortlist CSV missing from the repo)
+        st.session_state.calib_note = ("The calibration-table column is unavailable because the "
+            "historical file (national_shortlist_v2_1.csv) isn't next to the app. Add it to the "
+            "repo to enable this column. The classifier probability column still works.")
     # traffic-light signals: P50 size, classifier probability, calibration-table probability.
     # green = strong, yellow = middling, red = weak, grey = no data. One glance covers all three.
     def _light_p50(x):
@@ -986,6 +1036,9 @@ if st.session_state.get("ranked") is not None:
             if c in view.columns]
     top = view.head(int(top_n))
     st.caption(f"Showing {min(top_n, len(view))} of {len(view)} wells")
+    _cnote = st.session_state.get("calib_note")
+    if _cnote:
+        st.caption(":grey[" + _cnote + "]")
 
     # color highlighting: green = high probability / profit, red = low
     sty = top[show].style
@@ -1139,8 +1192,8 @@ the high band is, if anything, even safer than the label suggests.
         st.caption(f"{len(cell)} well(s) in '{pick_size} x {pick_row}'")
         if len(cell):
             cell_cols = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used",
-                                     "signals", "pred_central_p50", "calib_prob_from_table",
-                                     "prob_exceeds_breakeven", "expected_profit_USD",
+                                     "signals", "pred_central_p50", "prob_exceeds_breakeven",
+                                     "calib_prob_from_table", "expected_profit_USD",
                                      "risk_adjusted_profit_USD"] if c in cell.columns]
             st.dataframe(cell[cell_cols], width='stretch', hide_index=True)
             st.download_button(f"Download these {len(cell)} wells",
