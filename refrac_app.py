@@ -166,6 +166,76 @@ def flag_recent_refracs(df, years):
     return flag.fillna(False)
 
 
+# ---- monthly-series detection + rollup to one-row-per-well ----
+# Column-name hints for a raw monthly production export (many rows per well).
+_OIL_MONTH_HINTS  = ["crude oil monthly vol", "oil monthly vol", "monthly oil",
+                     "oil_bbl", "oil bbl", "oil_monthly"]
+_GAS_MONTH_HINTS  = ["natural gas monthly vol", "gas monthly vol", "monthly gas",
+                     "gas_mcf", "gas mcf", "gas_monthly"]
+_DATE_MONTH_HINTS = ["date", "prod month", "prod_month", "month", "production date",
+                     "period"]
+_API_HINTS        = ["api", "api14", "api_14", "well_api14", "api10", "api_10",
+                     "well api", "entity", "uwi"]
+
+def _find_col(cols, hints):
+    """Return the first column whose lowercased name contains any hint."""
+    low = {c: str(c).lower().strip() for c in cols}
+    for h in hints:
+        for c, lc in low.items():
+            if h in lc:
+                return c
+    return None
+
+def detect_monthly_series(df):
+    """Decide whether df looks like a raw monthly production series (many rows/well).
+    Returns dict of detected columns (api, oil, gas, date) or None if it doesn't look like one."""
+    oil = _find_col(df.columns, _OIL_MONTH_HINTS)
+    gas = _find_col(df.columns, _GAS_MONTH_HINTS)
+    api = _find_col(df.columns, _API_HINTS)
+    date = _find_col(df.columns, _DATE_MONTH_HINTS)
+    if not api or not (oil or gas):
+        return None
+    # a real series has repeated API values (more rows than unique wells)
+    n_rows = len(df)
+    n_wells = df[api].nunique(dropna=True)
+    if n_wells == 0 or n_rows <= n_wells:      # one row per well already -> not a series
+        return None
+    if n_rows / max(1, n_wells) < 1.5:         # barely any repetition -> treat as flat
+        return None
+    return {"api": api, "oil": oil, "gas": gas, "date": date,
+            "n_rows": n_rows, "n_wells": n_wells}
+
+def rollup_monthly_to_wells(df, cols):
+    """Collapse a monthly series to one row per well, computing the production features
+    the model expects. WITHOUT a refrac_date the cutoff is the whole available series,
+    so *_at_refrac means *_to_date here - the caller must warn the user about this."""
+    api, oil, gas, date = cols["api"], cols["oil"], cols["gas"], cols.get("date")
+    d = df.copy()
+    d["_oil"] = pd.to_numeric(d[oil], errors="coerce").fillna(0) if oil else 0.0
+    d["_gas"] = pd.to_numeric(d[gas], errors="coerce").fillna(0) if gas else 0.0
+    # sort each well's rows in time order so "last 12" means the most recent 12 months
+    if date:
+        d["_dt"] = pd.to_datetime(d[date], errors="coerce")
+        d = d.sort_values([api, "_dt"])
+    rows = []
+    for well, g in d.groupby(api, sort=False):
+        o = g["_oil"].values
+        ga = g["_gas"].values
+        n = len(o)
+        rows.append({
+            "well_API14": str(well),
+            "last12_oil_rate": float(o[-12:].mean()) if n else np.nan,
+            "last6_oil_rate":  float(o[-6:].mean())  if n else np.nan,
+            "peak_oil":        float(o.max())        if n else np.nan,
+            "cum_oil_at_refrac": float(o.sum()),
+            "cum_gas_at_refrac": float(ga.sum()),
+            "months_on_prod_at_refrac": int(n),
+            "ip30_oil": float(o[:1].mean()) if n else np.nan,
+            "ip90_oil": float(o[:3].mean()) if n else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
 @st.cache_data
 def load_calibration_data():
     """Load the historical shortlist once. Returns (DataFrame, p50col, actcol, basincol) or Nones."""
@@ -571,6 +641,42 @@ if df_raw.columns.duplicated().any():
     df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
     st.warning("Your file has duplicate column names; keeping the first of each: "
                + ", ".join(dups))
+
+# ---- detect a raw monthly production series and offer to roll it up ----
+_series = detect_monthly_series(df_raw)
+if _series is not None:
+    st.info(f"This looks like a **monthly production series**: {_series['n_rows']:,} rows for "
+            f"{_series['n_wells']:,} wells (about {_series['n_rows']/_series['n_wells']:.0f} months "
+            f"each). The model needs one row per well, so I can roll it up and compute the "
+            f"production features (last12_oil_rate, cum_oil, peak_oil, etc.) automatically.")
+    _has_refrac_date = _find_col(df_raw.columns, ["refrac_date", "refrac date", "job_date"])
+    st.warning("Two honest limits of an automatic roll-up:\n\n"
+               f"1. **No re-frac date** {'was found' if not _has_refrac_date else 'handling'}: "
+               "without a cut-off, the features are computed over the **entire** series "
+               "(so cum_oil / last-12 mean 'to date', not 'up to the re-frac'). "
+               "This shifts the numbers if the series extends past the re-frac.\n"
+               "2. **No completion geometry**: Proppant_LBS, PerfInterval_FT, frac_water_bbl, "
+               "TVD, lat/lon aren't in a production export, so they stay missing - and "
+               "Proppant_LBS is a top-5 feature, so predictions will still be flagged unreliable "
+               "until you add it from a completion file.")
+    if st.checkbox("Roll this monthly series up to one row per well", value=False,
+                   key="do_rollup"):
+        with st.spinner("Rolling up the monthly series..."):
+            rolled = rollup_monthly_to_wells(df_raw, _series)
+        # keep a basin column if the original had one (needed for routing)
+        _bas = _find_col(df_raw.columns, ["envbasin", "basin"])
+        if _bas:
+            first_basin = df_raw.groupby(_series["api"])[_bas].first()
+            rolled["ENVBasin"] = rolled["well_API14"].map(first_basin.to_dict())
+        df_raw = rolled
+        st.success(f"Rolled up to {len(df_raw):,} wells (one row each). "
+                   "Computed: last12_oil_rate, last6_oil_rate, peak_oil, cum_oil_at_refrac, "
+                   "cum_gas_at_refrac, months_on_prod_at_refrac, ip30_oil, ip90_oil.")
+        if not _bas:
+            st.warning("No ENVBasin column in the source, so every well will use the national "
+                       "model. Add ENVBasin for basin-aware routing.")
+    else:
+        st.stop()
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
 
