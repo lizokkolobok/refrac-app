@@ -168,12 +168,19 @@ def flag_recent_refracs(df, years):
 
 # ---- monthly-series detection + rollup to one-row-per-well ----
 # Column-name hints for a raw monthly production export (many rows per well).
+# Monthly-volume columns (already a per-month total, BBL/MCF):
 _OIL_MONTH_HINTS  = ["crude oil monthly vol", "oil monthly vol", "monthly oil",
                      "oil_bbl", "oil bbl", "oil_monthly"]
 _GAS_MONTH_HINTS  = ["natural gas monthly vol", "gas monthly vol", "monthly gas",
                      "gas_mcf", "gas mcf", "gas_monthly"]
-_DATE_MONTH_HINTS = ["date", "prod month", "prod_month", "month", "production date",
-                     "period"]
+# Daily-average columns (BBL or MCF per day; need x days-in-month to get a monthly volume).
+# Prefer CALENDAR day-average (already averaged over every calendar day of the month).
+_OIL_DAILY_HINTS  = ["crude oil calendar d-avg", "oil calendar d-avg",
+                     "crude oil calendar davg", "oil calendar davg"]
+_GAS_DAILY_HINTS  = ["natural gas calendar d-avg", "gas calendar d-avg",
+                     "natural gas calendar davg", "gas calendar davg"]
+_DATE_MONTH_HINTS = ["date", "month-year", "prod month", "prod_month", "month",
+                     "production date", "period"]
 _API_HINTS        = ["api", "api14", "api_14", "well_api14", "api10", "api_10",
                      "well api", "entity", "uwi"]
 
@@ -188,14 +195,22 @@ def _find_col(cols, hints):
 
 def detect_monthly_series(df):
     """Decide whether df looks like a raw monthly production series (many rows/well).
-    Returns dict of detected columns (api, oil, gas, date) or None if it doesn't look like one."""
-    oil = _find_col(df.columns, _OIL_MONTH_HINTS)
-    gas = _find_col(df.columns, _GAS_MONTH_HINTS)
-    api = _find_col(df.columns, _API_HINTS)
+    Detects either monthly-volume columns or daily-average columns (which are converted
+    to monthly volume via days-in-month). Returns a dict of detected columns or None."""
+    api  = _find_col(df.columns, _API_HINTS)
     date = _find_col(df.columns, _DATE_MONTH_HINTS)
+    # prefer true monthly-volume columns; fall back to daily-average
+    oil_m = _find_col(df.columns, _OIL_MONTH_HINTS)
+    gas_m = _find_col(df.columns, _GAS_MONTH_HINTS)
+    oil_d = _find_col(df.columns, _OIL_DAILY_HINTS)
+    gas_d = _find_col(df.columns, _GAS_DAILY_HINTS)
+    oil, oil_is_daily = (oil_m, False) if oil_m else (oil_d, True)
+    gas, gas_is_daily = (gas_m, False) if gas_m else (gas_d, True)
     if not api or not (oil or gas):
         return None
-    # a real series has repeated API values (more rows than unique wells)
+    # daily-average conversion needs a date (for days-in-month); require it in that case
+    if (oil_is_daily or gas_is_daily) and not date:
+        return None
     n_rows = len(df)
     n_wells = df[api].nunique(dropna=True)
     if n_wells == 0 or n_rows <= n_wells:      # one row per well already -> not a series
@@ -203,19 +218,32 @@ def detect_monthly_series(df):
     if n_rows / max(1, n_wells) < 1.5:         # barely any repetition -> treat as flat
         return None
     return {"api": api, "oil": oil, "gas": gas, "date": date,
+            "oil_is_daily": oil_is_daily, "gas_is_daily": gas_is_daily,
             "n_rows": n_rows, "n_wells": n_wells}
 
 def rollup_monthly_to_wells(df, cols):
     """Collapse a monthly series to one row per well, computing the production features
-    the model expects. WITHOUT a refrac_date the cutoff is the whole available series,
-    so *_at_refrac means *_to_date here - the caller must warn the user about this."""
+    the model expects. Daily-average columns are converted to monthly volume by
+    multiplying by the number of days in each month. WITHOUT a refrac_date the cutoff is
+    the whole available series, so *_at_refrac means *_to_date here - the caller warns."""
     api, oil, gas, date = cols["api"], cols["oil"], cols["gas"], cols.get("date")
+    oil_is_daily = cols.get("oil_is_daily", False)
+    gas_is_daily = cols.get("gas_is_daily", False)
     d = df.copy()
-    d["_oil"] = pd.to_numeric(d[oil], errors="coerce").fillna(0) if oil else 0.0
-    d["_gas"] = pd.to_numeric(d[gas], errors="coerce").fillna(0) if gas else 0.0
-    # sort each well's rows in time order so "last 12" means the most recent 12 months
+    # parse date first (needed both for sorting and for daily->monthly conversion)
+    days = None
     if date:
         d["_dt"] = pd.to_datetime(d[date], errors="coerce")
+        days = d["_dt"].dt.days_in_month.astype("float")
+    # oil/gas as MONTHLY VOLUME (convert from daily average if needed)
+    d["_oil"] = pd.to_numeric(d[oil], errors="coerce").fillna(0) if oil else 0.0
+    d["_gas"] = pd.to_numeric(d[gas], errors="coerce").fillna(0) if gas else 0.0
+    if oil_is_daily and days is not None:
+        d["_oil"] = d["_oil"] * days
+    if gas_is_daily and days is not None:
+        d["_gas"] = d["_gas"] * days
+    # sort each well's rows in time order so "last 12" means the most recent 12 months
+    if date:
         d = d.sort_values([api, "_dt"])
     rows = []
     for well, g in d.groupby(api, sort=False):
@@ -649,6 +677,11 @@ if _series is not None:
             f"{_series['n_wells']:,} wells (about {_series['n_rows']/_series['n_wells']:.0f} months "
             f"each). The model needs one row per well, so I can roll it up and compute the "
             f"production features (last12_oil_rate, cum_oil, peak_oil, etc.) automatically.")
+    if _series.get("oil_is_daily") or _series.get("gas_is_daily"):
+        st.caption(f"Detected daily-average columns (oil: '{_series['oil']}'"
+                   + (f", gas: '{_series['gas']}'" if _series.get('gas') else "")
+                   + "). These will be converted to monthly volume by multiplying by the number "
+                     "of days in each month.")
     _has_refrac_date = _find_col(df_raw.columns, ["refrac_date", "refrac date", "job_date"])
     st.warning("Two honest limits of an automatic roll-up:\n\n"
                f"1. **No re-frac date** {'was found' if not _has_refrac_date else 'handling'}: "
