@@ -38,6 +38,24 @@ PROFIT_PER_BOE_USD = 40.0
 BREAKEVEN_BOE = REFRAC_COST_USD / PROFIT_PER_BOE_USD             # 10,000
 
 SUCCESS_BOE = 15000
+# ---- county (5-digit API prefix) -> basin lookup ---------------------
+# Built from 10,034 historical wells that had both API and ENVBasin (build_county_basin_lookup.py).
+# 91% of these counties are "pure" (>=90% of wells in one basin). Used to fill ENVBasin when the
+# uploaded file has no basin column. Mixed counties (see _MIXED_COUNTIES) are flagged as approximate.
+COUNTY_TO_BASIN = {"42003":"PERMIAN OTHER", "42135":"PERMIAN OTHER", "30039":"SAN JUAN", "33053":"WILLISTON", "42103":"PERMIAN OTHER", "30045":"SAN JUAN", "42475":"PERMIAN OTHER", "33025":"WILLISTON", "42255":"WESTERN GULF", "42123":"WESTERN GULF", "50710":"RATON", "42165":"PERMIAN OTHER", "49025":"POWDER RIVER", "30015":"DELAWARE", "51234":"DENVER-JULESBURG", "42501":"PERMIAN OTHER", "42365":"ARK-LA-TX", "33105":"WILLISTON", "33061":"WILLISTON", "51233":"DENVER-JULESBURG", "42329":"MIDLAND", "42317":"MIDLAND", "42173":"MIDLAND", "42495":"PERMIAN OTHER", "35139":"MID-CONTINENT OTHER", "42389":"DELAWARE", "42301":"DELAWARE", "17031":"ARK-LA-TX", "50670":"SAN JUAN", "50451":"PICEANCE", "42297":"WESTERN GULF", "49029":"BIGHORN", "42383":"MIDLAND", "42203":"ARK-LA-TX", "42415":"PERMIAN OTHER", "35017":"ANADARKO", "17013":"ARK-LA-TX", "51232":"DENVER-JULESBURG", "42485":"FORT WORTH", "42237":"FORT WORTH", "49035":"GREATER GREEN RIVER", "42269":"FORT WORTH", "40304":"WESTERN US OTHER", "42401":"ARK-LA-TX", "42283":"WESTERN GULF", "35073":"ANADARKO", "37115":"APPALACHIAN", "40305":"WESTERN US OTHER", "43013":"UINTA", "42285":"WESTERN GULF", "42177":"WESTERN GULF", "42423":"ARK-LA-TX", "15189":"MID-CONTINENT OTHER", "42483":"ANADARKO", "49037":"GREATER GREEN RIVER", "42105":"PERMIAN OTHER", "42121":"FORT WORTH", "37081":"APPALACHIAN", "42109":"DELAWARE", "42013":"WESTERN GULF", "51031":"PICEANCE", "37015":"APPALACHIAN", "50452":"PICEANCE", "17081":"ARK-LA-TX", "42479":"WESTERN GULF", "51231":"DENVER-JULESBURG", "42497":"FORT WORTH", "42433":"FORT WORTH", "42311":"WESTERN GULF", "42235":"MIDLAND", "37125":"APPALACHIAN", "42367":"FORT WORTH", "17017":"ARK-LA-TX", "42445":"PERMIAN OTHER", "42341":"MID-CONTINENT OTHER", "42293":"WESTERN GULF", "49017":"BIGHORN", "42395":"WESTERN GULF", "42169":"PERMIAN OTHER", "17015":"ARK-LA-TX", "42161":"WESTERN GULF", "42363":"FORT WORTH", "25075":"POWDER RIVER", "50103":"ALASKA OTHER", "35121":"ARKOMA", "42347":"ARK-LA-TX", "42181":"MID-CONTINENT OTHER", "42163":"WESTERN GULF", "35051":"ANADARKO", "42419":"ARK-LA-TX", "42375":"MID-CONTINENT OTHER", "42421":"MID-CONTINENT OTHER", "35077":"ARKOMA", "42295":"ANADARKO", "42127":"WESTERN GULF", "42211":"ANADARKO", "42107":"PERMIAN OTHER", "42431":"MIDLAND", "35009":"ANADARKO", "42357":"ANADARKO", "47051":"APPALACHIAN", "35129":"ANADARKO", "42179":"MID-CONTINENT OTHER", "42073":"ARK-LA-TX", "33089":"WILLISTON", "42451":"MIDLAND", "42393":"ANADARKO", "49003":"BIGHORN", "35083":"CHEROKEE PLATFORM", "35119":"CHEROKEE PLATFORM", "50010":"DENVER-JULESBURG", "40302":"WESTERN US OTHER", "42372":"LOS ANGELES", "42183":"ARK-LA-TX", "40303":"WESTERN US OTHER", "35037":"CHEROKEE PLATFORM", "47017":"APPALACHIAN", "17085":"ARK-LA-TX", "35011":"ANADARKO", "37059":"APPALACHIAN", "35063":"ARKOMA", "15067":"MID-CONTINENT OTHER", "42335":"PERMIAN OTHER", "33007":"WILLISTON", "40306":"WESTERN US OTHER", "49013":"WIND RIVER", "25025":"WILLISTON", "35095":"ARDMORE", "50029":"ALASKA OTHER", "42219":"PERMIAN OTHER", "42233":"MID-CONTINENT OTHER", "47103":"APPALACHIAN", "33023":"WILLISTON", "37113":"APPALACHIAN", "40295":"WESTERN US OTHER", "42359":"MID-CONTINENT OTHER", "42149":"WESTERN GULF", "30043":"SAN JUAN", "51250":"DENVER-JULESBURG", "43047":"UINTA", "33013":"WILLISTON", "42405":"ARK-LA-TX", "33055":"WILLISTON", "15081":"MID-CONTINENT OTHER", "42439":"FORT WORTH", "49005":"POWDER RIVER", "42337":"FORT WORTH", "42289":"WESTERN GULF", "35015":"ANADARKO", "42303":"PERMIAN OTHER", "47095":"APPALACHIAN", "49007":"GREATER GREEN RIVER", "42033":"MIDLAND", "15055":"MID-CONTINENT OTHER", "37117":"APPALACHIAN", "42251":"FORT WORTH", "35029":"ARKOMA", "42499":"ARK-LA-TX", "40301":"WESTERN US OTHER", "50770":"PICEANCE", "35049":"ANADARKO", "42443":"PERMIAN OTHER", "35039":"ANADARKO", "35079":"ARKOMA", "41112":"VENTURA", "15093":"MID-CONTINENT OTHER", "37005":"APPALACHIAN", "35093":"ANADARKO", "50450":"PICEANCE", "42025":"WESTERN GULF", "42097":"FORT WORTH", "37131":"APPALACHIAN", "40292":"WESTERN US OTHER", "42065":"MID-CONTINENT OTHER", "51230":"DENVER-JULESBURG", "50771":"PICEANCE", "30021":"BRAVO DOME", "17027":"ARK-LA-TX", "51030":"PICEANCE", "37129":"APPALACHIAN", "47085":"APPALACHIAN", "47033":"APPALACHIAN", "35045":"ANADARKO", "50050":"DENVER-JULESBURG", "42355":"WESTERN GULF", "42331":"WESTERN GULF", "42241":"WESTERN GULF", "35087":"ANADARKO", "42221":"FORT WORTH", "42213":"ARK-LA-TX", "37035":"APPALACHIAN", "42429":"FORT WORTH", "42207":"FORT WORTH", "37063":"APPALACHIAN", "40300":"WESTERN US OTHER", "42005":"ARK-LA-TX", "40291":"WESTERN US OTHER", "15187":"MID-CONTINENT OTHER", "50142":"DENVER-JULESBURG", "50070":"SAN JUAN", "51235":"DENVER-JULESBURG", "35043":"ANADARKO", "35003":"MID-CONTINENT OTHER", "35007":"ANADARKO", "42507":"WESTERN GULF", "50130":"DENVER-JULESBURG", "49041":"GREATER GREEN RIVER", "37047":"APPALACHIAN", "42315":"ARK-LA-TX", "42223":"ARK-LA-TX", "37019":"APPALACHIAN", "15175":"MID-CONTINENT OTHER", "17069":"ARK-LA-TX", "50690":"DENVER-JULESBURG", "41010":"SACRAMENTO", "40298":"WESTERN US OTHER", "41012":"SACRAMENTO", "37083":"APPALACHIAN", "37123":"APPALACHIAN", "40112":"SACRAMENTO", "40290":"WESTERN US OTHER", "40296":"WESTERN US OTHER", "17061":"ARK-LA-TX", "42133":"FORT WORTH", "42115":"MIDLAND", "35151":"MID-CONTINENT OTHER", "37033":"APPALACHIAN", "37039":"APPALACHIAN", "37051":"APPALACHIAN", "37065":"APPALACHIAN", "35123":"ARKOMA", "35117":"CHEROKEE PLATFORM", "35047":"MID-CONTINENT OTHER", "42351":"WESTERN GULF", "42287":"WESTERN GULF", "42247":"WESTERN GULF", "42239":"WESTERN GULF", "42131":"WESTERN GULF", "42205":"MID-CONTINENT OTHER", "42493":"WESTERN GULF", "42459":"ARK-LA-TX", "47097":"APPALACHIAN", "17109":"GOM OFFSHORE", "17119":"ARK-LA-TX", "49009":"POWDER RIVER", "50011":"DENVER-JULESBURG"}
+# counties where the top basin covers <70% of wells - basin guess is less reliable there.
+_MIXED_COUNTIES = {"30025", "42461", "42227", "35019", "42195", "15129", "42371",
+                   "42353", "35137", "49023", "35153", "35149"}
+
+def basin_from_api(api):
+    """Return (basin, is_mixed) inferred from the API's 5-digit county code, or (None, False)."""
+    import re
+    digits = re.sub(r"\D", "", str(api))
+    code = digits[:5] if len(digits) >= 5 else None
+    if not code:
+        return None, False
+    return COUNTY_TO_BASIN.get(code), (code in _MIXED_COUNTIES)
+
 CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
             "cum_oil_at_refrac", "cum_gas_at_refrac", "months_on_prod_at_refrac",
             "Proppant_LBS", "PerfInterval_FT", "frac_water_bbl"]
@@ -712,6 +730,35 @@ if _series is not None:
         st.stop()
 
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
+
+# ---- infer ENVBasin from the API county code when no basin column is present ----
+_has_basin = "ENVBasin" in df_raw.columns and df_raw["ENVBasin"].notna().any()
+if not _has_basin:
+    _api_for_basin = next((c for c in ["well_API14", "API14", "API", "api10", "well_api14", "UWI"]
+                           if c in df_raw.columns), None)
+    if _api_for_basin:
+        inferred = df_raw[_api_for_basin].map(lambda a: basin_from_api(a)[0])
+        mixed = df_raw[_api_for_basin].map(lambda a: basin_from_api(a)[1])
+        n_found = int(inferred.notna().sum())
+        n_mixed = int((inferred.notna() & mixed).sum())
+        if n_found:
+            df_raw = df_raw.copy()
+            df_raw["ENVBasin"] = inferred
+            _has_basin = True
+            msg = (f"No basin column was in the file, so I inferred **ENVBasin from the API "
+                   f"county code** for {n_found:,} of {len(df_raw):,} wells.")
+            if n_mixed:
+                msg += (f" {n_mixed:,} of them are in **mixed counties** (which straddle two "
+                        f"basins), so their basin is a best guess - double-check those if they "
+                        f"matter.")
+            n_unfound = len(df_raw) - n_found
+            if n_unfound:
+                msg += (f" {n_unfound:,} well(s) had an unrecognised county code and will fall "
+                        f"back to the national model.")
+            st.info(msg)
+        else:
+            st.warning("No basin column, and I couldn't infer any basin from the API county "
+                       "codes (unrecognised codes). Every well will use the national model.")
 
 # ---- renamed-column handling (suggest, user confirms) ----
 if "colmap" not in st.session_state:
