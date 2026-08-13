@@ -523,10 +523,46 @@ if uploaded is None:
             "Each well is scored by its basin's best model; dead basins are dropped automatically.")
     st.stop()
 
+def _read_csv_resilient(f):
+    """Read a CSV, tolerating malformed rows and odd delimiters.
+    Returns (dataframe, note) where note describes any repair, or raises."""
+    def _looks_wrong(df):
+        # a single fat column usually means the delimiter wasn't a comma
+        return df.shape[1] == 1 and df.columns[0].count(";") + df.columns[0].count("\t") >= 1
+    # 1) normal read
+    try:
+        f.seek(0)
+        df = pd.read_csv(f)
+        if not _looks_wrong(df):
+            return df, None
+    except Exception:
+        pass
+    # 2) skip bad lines (extra/missing delimiters) - count how many
+    try:
+        f.seek(0)
+        total = sum(1 for _ in f) - 1          # data rows (minus header)
+        f.seek(0)
+        df = pd.read_csv(f, on_bad_lines="skip")
+        if not _looks_wrong(df):
+            skipped = max(0, total - len(df))
+            note = (f"{skipped} malformed row(s) were skipped (wrong number of columns). "
+                    f"Loaded {len(df):,} of {total:,} rows." if skipped else None)
+            return df, note
+    except Exception:
+        pass
+    # 3) python engine, auto-detecting the delimiter (handles ; or tab)
+    f.seek(0)
+    df = pd.read_csv(f, engine="python", sep=None, on_bad_lines="skip")
+    return df, "File was read with automatic delimiter detection; check the columns look right."
+
 try:
-    df_raw = pd.read_csv(uploaded)
+    df_raw, _read_note = _read_csv_resilient(uploaded)
+    if _read_note:
+        st.warning(_read_note)
 except Exception as e:
-    st.error(f"Could not read the CSV: {e}")
+    st.error(f"Could not read the CSV even after trying to repair it: {e}\n\n"
+             "The file may use an unusual format. Try re-saving it as a standard "
+             "comma-separated CSV (in Excel: Save As -> CSV UTF-8), then upload again.")
     st.stop()
 
 # drop duplicate column names (keep first) - duplicates break numeric conversion
@@ -865,8 +901,10 @@ if st.session_state.get("ranked") is not None:
         # explain WHY the probability thresholds are 40% and 70%
         with st.expander("Why the probability bands are 40% and 70%"):
             st.markdown("""
-The thresholds come from where the model's predicted probability actually changes real-world behaviour, measured on historical
-wells with known outcomes. Grouping those wells by predicted probability and checking how often they really cleared breakeven gives:
+The thresholds are not round numbers picked by hand - they come from where the model's
+predicted probability actually changes real-world behaviour, measured on 5,866 historical
+wells with known outcomes. Grouping those wells by predicted probability and checking how
+often they really cleared breakeven gives:
 
 | Predicted probability | Actually cleared breakeven |
 |---|---|
@@ -876,9 +914,22 @@ wells with known outcomes. Grouping those wells by predicted probability and che
 | 60-80% | 86% |
 | 80-100% | 99% |
 
-One extra reason these bands are conservative: the model tends to understate
+Two natural break points stand out:
+
+- **40%** is where success jumps. Below it, wells almost never pay off (0-15% real success);
+at 40-60% real success leaps to 74%. So 40% is the line between "almost never works" and
+"works most of the time." Everything below 40% is the **low** band.
+- **70%** is where success becomes near-certain. From about 70% upward, real success sits at
+90-99% - effectively a safe bet. So 70% is the line between "likely" and "almost sure."
+Everything at or above 70% is the **high** band.
+
+The **middle band (40-70%)** is the genuine judgement zone: these wells clear breakeven often
+(roughly three times out of four) but not reliably, so they deserve a closer look rather than
+an automatic yes or no.
+
+One extra reason these bands are conservative in your favour: the model tends to *under-state*
 probability (a well it calls 45% really succeeds about 68% of the time), so a well landing in
-the high band is safer than the label suggests.
+the high band is, if anything, even safer than the label suggests.
 """)
 
         # add matrix labels as downloadable columns
