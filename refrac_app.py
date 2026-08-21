@@ -337,6 +337,63 @@ def rollup_frac_to_wells(df, cols):
                 rec[c] = v.iloc[0]
         rows.append(rec)
     return pd.DataFrame(rows)
+# ---- Enverus 'production / well summary' wide-export -> model feature names ----
+# A single-row-per-well summary export uses its own column names. Map them onto the model's
+# feature names, applying the unit conversions the model was trained on. The critical case:
+# LastTwelveMonthOil / LastSixMonthOil are CUMULATIVE barrels over the window, but the model
+# expects an AVERAGE MONTHLY rate, so they are divided by the window length (12 / 6). MaxMonthOil
+# is already a single-month peak, so it maps straight to peak_oil with no division.
+_ENVERUS_DIRECT_RAW = {
+    "CumulativeOil": "cum_oil_at_refrac",
+    "CumulativeGas": "cum_gas_at_refrac",
+    "MaxMonthOil": "peak_oil",
+    "TotalProducingMonths": "months_on_prod_at_refrac",
+    "TrueVerticalDepth": "TVD_FT",
+    "MeasuredDepth": "MD_FT",
+    "LateralLength": "LateralLength_FT",
+    "Latitude": "lat",
+    "Longitude": "lon",
+    "CurrentOperator": "operator",
+    "TotalProppantMass": "Proppant_LBS",
+    "TotalFracFluidVolume": "frac_water_bbl",
+    "StimDate": "refrac_date",
+    "Basin": "ENVBasin",
+    "PrimaryFormation": "Formation",
+    "WellBoreProfile": "Trajectory",
+    "WellStatus": "ENVWellStatus",
+    "WellType": "ENVWellType",
+}
+_ENVERUS_DIRECT = {_norm(k): v for k, v in _ENVERUS_DIRECT_RAW.items()}
+_ENVERUS_DERIVED = {   # normalised source name -> (target feature, divisor to get a monthly rate)
+    _norm("LastTwelveMonthOil"): ("last12_oil_rate", 12.0),
+    _norm("LastSixMonthOil"):    ("last6_oil_rate",  6.0),
+}
+def normalize_enverus_columns(df):
+    """Rename Enverus summary columns onto model feature names (with unit conversions).
+    Only fills a target that isn't already present, so it never clobbers real columns or
+    values already produced by the monthly / frac roll-ups. Matching is case- and
+    punctuation-insensitive. Returns (df, notes)."""
+    df = df.copy()
+    norm_to_actual = {}
+    for c in df.columns:
+        norm_to_actual.setdefault(_norm(c), c)      # first occurrence wins
+    notes = []
+    for nkey, target in _ENVERUS_DIRECT.items():
+        if target in df.columns:
+            continue
+        src = norm_to_actual.get(nkey)
+        if src and src != target:
+            df = df.rename(columns={src: target})
+            notes.append(f"{src} -> {target}")
+    for nkey, (target, div) in _ENVERUS_DERIVED.items():
+        if target in df.columns:
+            continue
+        src = norm_to_actual.get(nkey)
+        if src:
+            df[target] = pd.to_numeric(df[src].astype(str).str.replace(",", "", regex=False),
+                                       errors="coerce") / div
+            notes.append(f"{src} / {int(div)} -> {target}  (window total -> monthly rate)")
+    return df, notes
 @st.cache_data
 def load_calibration_data():
     """Load the historical shortlist once. Returns (DataFrame, p50col, actcol, basincol) or Nones."""
@@ -825,6 +882,14 @@ if df_raw.columns.duplicated().any():
     st.warning("Your file has duplicate column names; keeping the first of each: "
                + ", ".join(dups))
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
+# ---- map Enverus 'production / well summary' column names onto model features ----
+# (handles wide single-row-per-well exports: LastTwelveMonthOil/12 -> last12_oil_rate, etc.)
+df_raw, _enverus_notes = normalize_enverus_columns(df_raw)
+if _enverus_notes:
+    with st.expander(f"Auto-mapped {len(_enverus_notes)} column(s) to model features"):
+        st.caption("The app matched these to the features the model needs (with unit "
+                   "conversions where required) - no manual matching needed for them:")
+        st.markdown("\n".join(f"- {n}" for n in _enverus_notes))
 # ---- accept an Enverus-style 'Basin' column as ENVBasin (header exports name it 'Basin') ----
 if "ENVBasin" not in df_raw.columns:
     _basin_alias = next((c for c in ["Basin", "basin", "ENV_Basin", "Play/Basin", "ENVBasin "]
