@@ -5,11 +5,9 @@ Scores uploaded wells using each basin's best model:
   - strong basins use their own dedicated model
   - all other basins use the national model (v2.1)
 Self-contained: reproduces the training feature pipeline from the bundles.
-
 Files that must sit next to this script:
   national_model_v2_1.joblib
   basin_models/model_<BASIN>.joblib   (one per basin with its own model)
-
 Run:  streamlit run refrac_app.py
 Requirements: streamlit, pandas, numpy, scikit-learn, joblib
 """
@@ -18,12 +16,10 @@ import numpy as np
 import pandas as pd
 import joblib
 import streamlit as st
-
 HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else "."
 NATIONAL_PATH = os.path.join(HERE, "national_model_v2_1.joblib")
 BASIN_DIR = os.path.join(HERE, "basin_models")
 SHORTLIST_PATH = os.path.join(HERE, "national_shortlist_v2_1.csv")   # historical data for the calibration table
-
 # ---- CONFIG ----------------------
 OWN_MODEL_BASINS = {"ARK-LA-TX", "MIDLAND", "FORT WORTH", "PERMIAN OTHER"}  # own model clearly wins OOF
 # Basins where the dedicated basin model beats the national model out-of-fold.
@@ -36,7 +32,6 @@ WEAK_BASINS = {"ARKOMA", "ROCKIES OTHER", "SACRAMENTO", "PICEANCE", "MID-CONTINE
 REFRAC_COST_USD = 400_000
 PROFIT_PER_BOE_USD = 40.0
 BREAKEVEN_BOE = REFRAC_COST_USD / PROFIT_PER_BOE_USD             # 10,000
-
 SUCCESS_BOE = 15000
 # ---- county (5-digit API prefix) -> basin lookup ---------------------
 # Built from 10,034 historical wells that had both API and ENVBasin (build_county_basin_lookup.py).
@@ -46,7 +41,6 @@ COUNTY_TO_BASIN = {"42003":"PERMIAN OTHER", "42135":"PERMIAN OTHER", "30039":"SA
 # counties where the top basin covers <70% of wells - basin guess is less reliable there.
 _MIXED_COUNTIES = {"30025", "42461", "42227", "35019", "42195", "15129", "42371",
                    "42353", "35137", "49023", "35153", "35149"}
-
 def basin_from_api(api):
     """Return (basin, is_mixed) inferred from the API's 5-digit county code, or (None, False)."""
     import re
@@ -55,13 +49,11 @@ def basin_from_api(api):
     if not code:
         return None, False
     return COUNTY_TO_BASIN.get(code), (code in _MIXED_COUNTIES)
-
 CRITICAL = ["last12_oil_rate", "last6_oil_rate", "peak_oil",
             "cum_oil_at_refrac", "cum_gas_at_refrac", "months_on_prod_at_refrac",
             "Proppant_LBS", "PerfInterval_FT", "frac_water_bbl"]
 # TOP5 most important input features - if any is missing, the prediction is NOT valid.
 TOP5 = ["last12_oil_rate", "last6_oil_rate", "peak_oil", "cum_oil_at_refrac", "Proppant_LBS"]
-
 # ---- feature lists ----------------------------
 STRUCTURAL = ["well_age_yrs", "job_year", "refrac_seq", "well_n_refracs",
               "tvd_ft", "frac_water_bbl", "is_injector",
@@ -86,7 +78,6 @@ ONEHOT = ["Trajectory", "ENVWellboreType", "ENVWellStatus", "ENVProdWellType",
           "ENVWellType", "Conventional", "state", "ENVProducingMethod"]
 ENG_COLS = ["eng_depletion_rate", "eng_off_peak_ratio", "eng_decline_ratio",
             "eng_gas_fraction", "eng_proppant_per_perf"]
-
 # ---- column-matching helpers (renamed-column handling) ----------------------
 KNOWN_ALIASES = {
     "tvd": "TVD_FT", "tvd_ft": "TVD_FT", "true_vertical_depth": "TVD_FT",
@@ -100,14 +91,11 @@ KNOWN_ALIASES = {
     "cum_oil": "cum_oil_at_refrac", "cumulative_oil": "cum_oil_at_refrac",
     "cum_gas": "cum_gas_at_refrac", "cumulative_gas": "cum_gas_at_refrac",
 }
-
 def _norm(s):
     return "".join(ch for ch in str(s).lower() if ch.isalnum())
-
 def _tokens(s):
     import re
     return set(t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t)
-
 def suggest_matches(missing, extra):
     from difflib import SequenceMatcher
     out = {}
@@ -129,7 +117,6 @@ def suggest_matches(missing, extra):
         if scored:
             out[m] = [e for _, e in scored]
     return out
-
 def suggest_by_content(missing, extra, df_new):
     """Content hint using the national model's stored basin medians as the reference scale."""
     def stats(s):
@@ -156,7 +143,6 @@ def suggest_by_content(missing, extra, df_new):
         if scored:
             out[m] = [e for _, e in scored]
     return out
-
 def check_columns(df_new, feats):
     have = set(df_new.columns)
     raw_needed = set(feats) | {"cum_oil_at_refrac", "months_on_prod_at_refrac", "last6_oil_rate",
@@ -166,8 +152,6 @@ def check_columns(df_new, feats):
     extra = sorted(have - raw_needed)
     crit_missing = [c for c in missing if c in CRITICAL and c not in ENG]
     return missing, extra, crit_missing
-
-
 def flag_recent_refracs(df, years):
     """Return a boolean Series: True if the well's last re-frac was within `years`.
     Uses refrac_date if present, else job_year. Wells with no date -> False (unknown)."""
@@ -182,8 +166,6 @@ def flag_recent_refracs(df, years):
         yr = pd.to_numeric(df["job_year"], errors="coerce")
         flag = flag | ((today.year - yr) < years)
     return flag.fillna(False)
-
-
 # ---- monthly-series detection + rollup to one-row-per-well ----
 # Column-name hints for a raw monthly production export (many rows per well).
 # Monthly-volume columns (already a per-month total, BBL/MCF):
@@ -201,7 +183,6 @@ _DATE_MONTH_HINTS = ["date", "month-year", "prod month", "prod_month", "month",
                      "production date", "period"]
 _API_HINTS        = ["api", "api14", "api_14", "well_api14", "api10", "api_10",
                      "well api", "entity", "uwi"]
-
 def _find_col(cols, hints):
     """Return the first column whose lowercased name contains any hint."""
     low = {c: str(c).lower().strip() for c in cols}
@@ -210,7 +191,6 @@ def _find_col(cols, hints):
             if h in lc:
                 return c
     return None
-
 def detect_monthly_series(df):
     """Decide whether df looks like a raw monthly production series (many rows/well).
     Detects either monthly-volume columns or daily-average columns (which are converted
@@ -238,7 +218,6 @@ def detect_monthly_series(df):
     return {"api": api, "oil": oil, "gas": gas, "date": date,
             "oil_is_daily": oil_is_daily, "gas_is_daily": gas_is_daily,
             "n_rows": n_rows, "n_wells": n_wells}
-
 def rollup_monthly_to_wells(df, cols):
     """Collapse a monthly series to one row per well, computing the production features
     the model expects. Daily-average columns are converted to monthly volume by
@@ -280,8 +259,84 @@ def rollup_monthly_to_wells(df, cols):
             "ip90_oil": float(o[:3].mean()) if n else np.nan,
         })
     return pd.DataFrame(rows)
-
-
+# ---- frac-stage / perforation detection + rollup to one-row-per-well ----
+# These exports have MANY rows per well (one per stage / per perf interval). They must be
+# aggregated, not merged as-is (a first-row merge would keep only one stage and undercount
+# proppant/fluid and miss the stage count / perf interval entirely).
+_PROP_HINTS  = ["total proppant mass", "proppant mass", "sand tonnage", "total proppant",
+                "proppant lbs", "proppant"]
+_FLUID_HINTS = ["total frac fluid volume", "frac fluid volume", "total fluid pumped",
+                "base water volume", "fluid volume", "water volume", "frac_water", "frac water"]
+_STAGE_HINTS = ["stage number", "frac stages", "number of stages", "stage count", "num stages"]
+_STIMDATE_HINTS = ["stim date", "frac start date", "treatment date", "frac date",
+                   "stimulation date", "refrac date"]
+_UPERF_HINTS = ["upper perf", "perf top", "top perf"]
+_LPERF_HINTS = ["lower perf", "perf bottom", "bottom perf"]
+def detect_frac_table(df):
+    """Detect a frac-stage or perforation export. Returns a dict of columns or None.
+    Fires only when the file actually carries frac/perf signal (proppant, fluid, stage,
+    or an upper/lower perf pair) - so headers/production files are left untouched."""
+    api = _find_col(df.columns, _API_HINTS)
+    if not api:
+        return None
+    cols = {"api": api,
+            "prop":  _find_col(df.columns, _PROP_HINTS),
+            "fluid": _find_col(df.columns, _FLUID_HINTS),
+            "stage": _find_col(df.columns, _STAGE_HINTS),
+            "date":  _find_col(df.columns, _STIMDATE_HINTS),
+            "uperf": _find_col(df.columns, _UPERF_HINTS),
+            "lperf": _find_col(df.columns, _LPERF_HINTS)}
+    if not any(cols[k] for k in ("prop", "fluid", "stage", "uperf")):
+        return None
+    return cols
+def rollup_frac_to_wells(df, cols):
+    """Collapse a frac-stage / perforation table (many rows per well) to one row per well:
+    sum proppant & fluid across stages, derive the perf interval from upper/lower perf,
+    count stages, and take the latest stim date as refrac_date. All other columns are
+    carried through (first non-null) so completions extras (IPOil, Formation, dates) survive."""
+    api = cols["api"]
+    d = df.copy()
+    def _n(c):
+        if not c:
+            return None
+        return pd.to_numeric(d[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+    d["_prop"]  = _n(cols["prop"])
+    d["_fluid"] = _n(cols["fluid"])
+    d["_stage"] = _n(cols["stage"])
+    if cols["uperf"] and cols["lperf"]:
+        d["_perf"] = (_n(cols["lperf"]) - _n(cols["uperf"])).abs()
+    else:
+        d["_perf"] = np.nan
+    if cols["date"]:
+        d["_dt"] = pd.to_datetime(d[cols["date"]], errors="coerce")
+    consumed = {cols[k] for k in ("prop", "fluid", "stage", "date", "uperf", "lperf") if cols[k]}
+    consumed.add(api)
+    carry = [c for c in df.columns if c not in consumed]
+    rows = []
+    for well, g in d.groupby(api, sort=False):
+        rec = {"well_API14": str(well)}
+        if cols["prop"]:
+            rec["Proppant_LBS"] = float(g["_prop"].sum(min_count=1))
+        if cols["fluid"]:
+            rec["frac_water_bbl"] = float(g["_fluid"].sum(min_count=1))
+        if cols["uperf"] and cols["lperf"]:
+            rec["PerfInterval_FT"] = float(g["_perf"].sum(min_count=1))
+        if cols["stage"]:
+            mx = g["_stage"].max()
+            rec["FracStages"] = int(mx) if pd.notna(mx) else int(len(g))
+        elif len(g) > 1:
+            rec["FracStages"] = int(len(g))
+        if cols["date"]:
+            dt = g["_dt"].max()
+            if pd.notna(dt):
+                rec["refrac_date"] = dt
+                rec["job_year"] = int(dt.year)
+        for c in carry:
+            v = g[c].dropna()
+            if len(v):
+                rec[c] = v.iloc[0]
+        rows.append(rec)
+    return pd.DataFrame(rows)
 @st.cache_data
 def load_calibration_data():
     """Load the historical shortlist once. Returns (DataFrame, p50col, actcol, basincol) or Nones."""
@@ -300,7 +355,6 @@ def load_calibration_data():
     if basc:
         df[basc] = df[basc].astype(str).str.upper().str.strip()
     return df, p50c, actc, basc
-
 def _cal_bins(max_p50):
     """Uniform 5k-wide P50 bins from <0 up past the data max."""
     top = int(np.ceil(max(max_p50, 5000) / 5000.0) * 5000)
@@ -311,7 +365,6 @@ def _cal_bins(max_p50):
         labels.append(f"{lo//1000}-{hi//1000}k")
         lo = hi
     return edges, labels
-
 def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
     """Calibration table for a wells subset, in uniform 5k P50 buckets."""
     if d is None or len(d) == 0:
@@ -328,7 +381,6 @@ def calibration_for(d, p50c, actc, threshold=BREAKEVEN_BOE):
                      "actually_exceeded_breakeven": f"{acc*100:.0f}%",
                      "median_actual_BOE": int(d[actc][m].median())})
     return pd.DataFrame(rows), float(ok.mean())
-
 @st.cache_data
 def basin_calibration_prob(min_bucket=5):
     """Per-basin lookup: {basin: {bucket_label: success_fraction}} in 5k buckets.
@@ -349,7 +401,6 @@ def basin_calibration_prob(min_bucket=5):
         if m:
             table[basin] = m
     return table, edges, labels
-
 @st.cache_data
 def national_calibration_prob(min_bucket=5):
     """Basin-agnostic lookup: {bucket_label: success_fraction} over ALL wells in 5k buckets.
@@ -366,7 +417,6 @@ def national_calibration_prob(min_bucket=5):
         if len(gg) >= min_bucket:
             m[str(lab)] = float(gg["_ok"].mean())
     return (m or None), edges, labels
-
 def calib_prob_for_wells(ranked):
     """For each well, look up the historical success rate of its basin+P50 bucket.
     Falls back to the national (all-basins) rate for that P50 bucket when the basin is
@@ -391,9 +441,7 @@ def calib_prob_for_wells(ranked):
             v = nat.get(bkt, np.nan)
         out.append(v)
     return pd.Series(out, index=ranked.index)
-
 st.set_page_config(page_title="Re-Frac Screening", page_icon="oil", layout="wide")
-
 # ---- light professional theme: clean background + teal accent ----
 st.markdown("""
 <style>
@@ -427,14 +475,11 @@ section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { color
 [data-testid="stAlert"] { border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
-
-
 def _find_basin_model_files():
     """Look for basin models in basin_models/ AND next to the app (root)."""
     files = glob.glob(os.path.join(BASIN_DIR, "model_*.joblib"))
     files += glob.glob(os.path.join(HERE, "model_*.joblib"))   # loaded loose in the repo root
     return sorted(set(files))
-
 @st.cache_resource
 def load_models():
     national = joblib.load(NATIONAL_PATH)
@@ -448,8 +493,6 @@ def load_models():
         except Exception as e:
             load_errors.append((os.path.basename(mf), f"{type(e).__name__}: {e}"))
     return national, basins, load_errors
-
-
 def _num(f, c):
     if c not in f.columns:
         return pd.Series(np.nan, index=f.index)
@@ -457,7 +500,6 @@ def _num(f, c):
     if isinstance(col, pd.DataFrame):   # duplicate column names -> take the first
         col = col.iloc[:, 0]
     return pd.to_numeric(col, errors="coerce")
-
 def add_eng(df):
     df = df.copy()
     if df.columns.duplicated().any():                 # guard: duplicate names break _num
@@ -468,7 +510,6 @@ def add_eng(df):
     df["eng_gas_fraction"] = _num(df, "cum_gas_at_refrac") / (_num(df, "cum_oil_at_refrac") * 6 + _num(df, "cum_gas_at_refrac") + 1)
     df["eng_proppant_per_perf"] = _num(df, "Proppant_LBS") / (_num(df, "PerfInterval_FT") + 1)
     return df.replace([np.inf, -np.inf], np.nan).infer_objects(copy=False)
-
 def build_features(df):
     if df.columns.duplicated().any():                 # guard: keep first of any duplicate
         df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -484,7 +525,6 @@ def build_features(df):
         oh = pd.get_dummies(df[present].astype(str), prefix=present, dummy_na=True)
         X = pd.concat([X, oh.set_index(X.index)], axis=1)
     return X.astype(float)
-
 def features_for_bundle(df_raw, B, basin_series):
     df = add_eng(df_raw)
     X = build_features(df)
@@ -506,7 +546,6 @@ def features_for_bundle(df_raw, B, basin_series):
     for c in FEATS:
         Xs[c] = Xs[c].fillna(B.get("train_medians", {}).get(c, 0))
     return Xs
-
 def predict_bundle(df_raw, B, basin_series):
     Xs = features_for_bundle(df_raw, B, basin_series)
     LEV = np.array(B["qgrid"]); models = B["models"]
@@ -520,19 +559,14 @@ def predict_bundle(df_raw, B, basin_series):
                         else 1 - np.interp(T, qs, LEV)) for qs in Q])
     c = float(B.get("conformal", {}).get("__GLOBAL__", 0))
     return p50, Q[:, 0] - c, Q[:, -1] + c, prob
-
-
 def hybrid_score(df_raw, national, basins, drop_weak=True):
     basin = df_raw["ENVBasin"].astype(str).str.upper().str.strip() if "ENVBasin" in df_raw.columns \
             else pd.Series("UNKNOWN", index=df_raw.index)
     df_raw = df_raw.copy(); df_raw["_basin"] = basin
-
     p50 = np.full(len(df_raw), np.nan); lo = np.full(len(df_raw), np.nan)
     hi = np.full(len(df_raw), np.nan); prob = np.full(len(df_raw), np.nan)
     model_used = np.array(["national"] * len(df_raw), dtype=object)
-
     p50[:], lo[:], hi[:], prob[:] = predict_bundle(df_raw, national, basin)
-
     for b in OWN_MODEL_BASINS:
         if b in basins:
             mask = (basin == b).values
@@ -541,7 +575,6 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
                 p, l, h, pr = predict_bundle(sub, basins[b], sub["_basin"])
                 p50[mask], lo[mask], hi[mask], prob[mask] = p, l, h, pr
                 model_used[mask] = f"basin:{b}"
-
     out = df_raw.copy()
     out["ENVBasin"] = basin
     out["prob_exceeds_breakeven"] = np.round(prob, 3)
@@ -557,7 +590,6 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
         rel = (hi - lo) / np.where(np.abs(p50) < 1, np.nan, p50)
     out["relative_uncertainty"] = np.round(np.abs(rel), 2)
     out["model_used"] = model_used
-
     dead_mask = basin.isin(DEAD_BASINS).values
     weak_mask = basin.isin(WEAK_BASINS).values if drop_weak else np.zeros(len(out), bool)
     remove_mask = dead_mask | weak_mask
@@ -567,8 +599,6 @@ def hybrid_score(df_raw, national, basins, drop_weak=True):
     out["rank"] = out["prob_exceeds_breakeven"].rank(ascending=False, method="first").astype(int)
     out = out.sort_values("rank").reset_index(drop=True)
     return out, dropped
-
-
 # ----------------------------- UI -----------------------------
 st.markdown("""
 <div style="background: #090D73; padding: 2rem 2.2rem; border-radius: 14px;
@@ -594,7 +624,6 @@ st.markdown("""
   </div>
 </div>
 """, unsafe_allow_html=True)
-
 missing_files = []
 if not os.path.exists(NATIONAL_PATH):
     missing_files.append("national_model_v2_1.joblib")
@@ -604,13 +633,11 @@ if missing_files:
     st.error("Missing model files: " + ", ".join(f"**{m}**" for m in missing_files) +
              ". Place them next to this app.")
     st.stop()
-
 national, basins, _load_errors = load_models()
 if _load_errors:
     st.warning("Some basin models could not be loaded and were skipped "
                "(those basins will use the national model):\n\n"
                + "\n".join(f"- {f}: {msg}" for f, msg in _load_errors))
-
 with st.sidebar:
     st.header("Setup")
     st.markdown(f"**National model:** loaded ({national.get('version','v2.1')})")
@@ -636,7 +663,6 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Input needs an ENVBasin column (basin routing). A refrac_date or job_year column "
                "enables the recent-refrac option.")
-
 # reference calibration tables (historical), per basin: how reliable is a given P50 prediction?
 _cal_df, _p50c, _actc, _basc = load_calibration_data()
 if _cal_df is not None:
@@ -659,7 +685,6 @@ if _cal_df is not None:
                        "you can fully trust in this basin.")
         else:
             st.caption("Not enough labelled wells in this basin for a table.")
-
 def _read_csv_resilient(f):
     """Read a CSV, tolerating malformed rows and odd delimiters.
     Returns (dataframe, note) where note describes any repair, or raises."""
@@ -691,13 +716,17 @@ def _read_csv_resilient(f):
     f.seek(0)
     df = pd.read_csv(f, engine="python", sep=None, on_bad_lines="skip")
     return df, "File was read with automatic delimiter detection; check the columns look right."
-
 def _norm_api(s):
-    """Normalise an API/UWI value to digits only, so files with different formats
-    (05-067-10028 vs 0506710028) merge correctly."""
+    """Normalise an API/UWI value to a canonical 10-digit core (state+county+well) so
+    files that use different formats (05-067-10028, 0506710028, API12, API14 with the
+    2-digit directional + 2-digit event suffix) all merge to the SAME key. Stripping
+    non-digits alone is not enough: API10 '3004560258' and API14 '30045602580000' would
+    otherwise never match."""
     import re
-    return pd.Series(s, dtype="object").map(lambda x: re.sub(r"\D", "", str(x)) if pd.notna(x) else "")
-
+    def canon(x):
+        d = re.sub(r"\D", "", str(x)) if pd.notna(x) else ""
+        return d[:10] if len(d) >= 10 else d
+    return pd.Series(s, dtype="object").map(canon)
 def _api_col_of(df):
     """Return the name of the API-like column in df, or None."""
     for c in ["well_API14", "API14", "API", "api10", "well_api14", "UWI"]:
@@ -708,16 +737,15 @@ def _api_col_of(df):
         if ("api" in lc or "uwi" in lc or lc == "entity") and "capital" not in lc:
             return c
     return None
-
 def _prep_one_file(uf):
-    """Read one uploaded file, roll it up if it's a monthly series, and return
-    (dataframe_one_row_per_well, label) or (None, reason)."""
+    """Read one uploaded file, roll it up if it's a monthly series or a frac/perf table,
+    and return (dataframe_one_row_per_well, label) or (None, reason)."""
     df, note = _read_csv_resilient(uf)
     if note:
         st.caption(f":grey[{uf.name}: {note}]")
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
-    # roll up a monthly series automatically (no checkbox in multi-file mode)
+    # roll up a monthly production series automatically (no checkbox in multi-file mode)
     ser = detect_monthly_series(df)
     if ser is not None:
         rolled = rollup_monthly_to_wells(df, ser)
@@ -728,18 +756,25 @@ def _prep_one_file(uf):
         conv = " (daily averages converted to monthly)" if (ser.get("oil_is_daily") or ser.get("gas_is_daily")) else ""
         st.caption(f":grey[{uf.name}: monthly series -> rolled up to {len(rolled):,} wells{conv}.]")
         return rolled, uf.name
+    # roll up a frac-stage / perforation table (many rows per well) into per-well aggregates
+    frac = detect_frac_table(df)
+    if frac is not None:
+        rolled = rollup_frac_to_wells(df, frac)
+        got = [k for k in ("Proppant_LBS", "frac_water_bbl", "PerfInterval_FT", "FracStages")
+               if k in rolled.columns]
+        st.caption(f":grey[{uf.name}: frac/perf table -> aggregated to {len(rolled):,} wells "
+                   f"(derived: {', '.join(got) if got else 'n/a'}).]")
+        return rolled, uf.name
     return df, uf.name
-
 uploaded_files = st.file_uploader(
     "Upload one or more wells CSVs", type=["csv"], accept_multiple_files=True,
     help="You can upload several files for the SAME wells (e.g. production, wellbore geometry, "
-         "frac/proppant). They'll be merged by API into one row per well.")
+         "frac/proppant, perforations). They'll be merged by API into one row per well.")
 if not uploaded_files:
     st.info("Upload one or more CSVs. With several files for the same wells (production, geometry, "
-            "frac), the app merges them by API so all the model's features come together. "
-            "Monthly production series are rolled up automatically.")
+            "frac, perforations), the app merges them by API so all the model's features come "
+            "together. Monthly production series and frac-stage tables are rolled up automatically.")
     st.stop()
-
 # read + prepare each file, then merge them all on a normalised API key
 _prepared = []
 for uf in uploaded_files:
@@ -749,11 +784,9 @@ for uf in uploaded_files:
             _prepared.append((d, label))
     except Exception as e:
         st.error(f"Could not read {uf.name}: {e}")
-
 if not _prepared:
     st.error("None of the uploaded files could be read. Try re-saving as standard CSV (UTF-8).")
     st.stop()
-
 if len(_prepared) == 1:
     df_raw = _prepared[0][0]
 else:
@@ -785,16 +818,40 @@ else:
     df_raw = merged.drop(columns=["_apikey"])
     st.success(f"Merged {len(_prepared)} files by API into {len(df_raw):,} wells "
                f"with {df_raw.shape[1]} combined columns.")
-
 # drop duplicate column names (keep first) - duplicates break numeric conversion
 if df_raw.columns.duplicated().any():
     dups = sorted(set(df_raw.columns[df_raw.columns.duplicated()]))
     df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
     st.warning("Your file has duplicate column names; keeping the first of each: "
                + ", ".join(dups))
-
 st.success(f"Loaded {len(df_raw):,} wells with {df_raw.shape[1]} columns.")
-
+# ---- accept an Enverus-style 'Basin' column as ENVBasin (header exports name it 'Basin') ----
+if "ENVBasin" not in df_raw.columns:
+    _basin_alias = next((c for c in ["Basin", "basin", "ENV_Basin", "Play/Basin", "ENVBasin "]
+                         if c in df_raw.columns), None)
+    if _basin_alias:
+        df_raw = df_raw.rename(columns={_basin_alias: "ENVBasin"})
+        st.caption(f":grey[Using '{_basin_alias}' as ENVBasin for basin routing.]")
+# ---- unit sanity check on proppant / frac water (warn only, never auto-transform) ----
+def _median_num(col):
+    if col in df_raw.columns:
+        s = pd.to_numeric(df_raw[col], errors="coerce").dropna()
+        return float(s.median()) if len(s) else None
+    return None
+_prop_med = _median_num("Proppant_LBS")
+_water_med = _median_num("frac_water_bbl")
+_unit_warn = []
+if _prop_med is not None and 0 < _prop_med < 50_000:
+    _unit_warn.append(f"**Proppant_LBS** median is {_prop_med:,.0f} - unusually low for pounds "
+                      f"(a modern frac is millions of lbs). The file may be in **tons** (x2,000) "
+                      f"or thousand-lbs.")
+if _water_med is not None and _water_med > 5_000_000:
+    _unit_warn.append(f"**frac_water_bbl** median is {_water_med:,.0f} - unusually high for "
+                      f"barrels. The file may be in **gallons** (divide by 42).")
+if _unit_warn:
+    st.warning("Possible unit mismatch (the model was trained on pounds and barrels):\n\n"
+               + "\n".join(f"- {w}" for w in _unit_warn)
+               + "\n\nConvert to lbs / bbl before trusting the scores.")
 # ---- infer ENVBasin from the API county code when no basin column is present ----
 _has_basin = "ENVBasin" in df_raw.columns and df_raw["ENVBasin"].notna().any()
 if not _has_basin:
@@ -834,7 +891,6 @@ if not _has_basin:
                        f"counties aren't in the historical set, so every well will use the "
                        f"national model. If '{_code}' looks wrong (e.g. not 5 digits), the API "
                        f"format may differ.")
-
 # ---- renamed-column handling (suggest, user confirms) ----
 if "colmap" not in st.session_state:
     st.session_state.colmap = {}
@@ -874,7 +930,6 @@ if crit_missing:
         missing, extra, crit_missing = check_columns(df_raw, _feats)
         if not crit_missing:
             st.success("All important features present after matching.")
-
 # RED alert if any TOP5 feature is still absent from the data (after any matching)
 _top5_missing = [c for c in TOP5 if c not in df_raw.columns]
 st.session_state.top5_missing = _top5_missing
@@ -883,7 +938,6 @@ if _top5_missing:
              + ", ".join(_top5_missing) + "**. The model depends on them, so any scores produced "
              "will be filled with placeholder values and should not be trusted. Add or match these "
              "columns before relying on the results.")
-
 # heads-up about dead-basin wells BEFORE scoring
 if "ENVBasin" in df_raw.columns:
     _b = df_raw["ENVBasin"].astype(str).str.upper().str.strip()
@@ -893,11 +947,9 @@ if "ENVBasin" in df_raw.columns:
         _lines = "\n".join(f"- {name}: {n} well(s)" for name, n in _excl_counts.items())
         st.warning(f"WARNING - {int(_excl_counts.sum())} well(s) are in dead/weak basins and may be "
                    f"DROPPED from the results (uplift there rarely clears breakeven):\n\n{_lines}")
-
 if "ENVBasin" not in df_raw.columns:
     st.warning("No ENVBasin column found - every well will use the national model, and dead "
                "basins can't be excluded. Add an ENVBasin column for full hybrid routing.")
-
 if st.button("Run screening", type="primary"):
     with st.spinner("Scoring wells with per-basin models..."):
         ranked, dropped = hybrid_score(df_raw, national, basins, drop_weak=drop_weak)
@@ -957,7 +1009,6 @@ if st.button("Run screening", type="primary"):
     st.session_state.dropped = dropped
     st.session_state.recent_action_used = recent_action if recent_years > 0 else None
     st.session_state.recent_years_used = recent_years
-
 # ---- results (from session_state, survives widget reruns) ----
 if st.session_state.get("ranked") is not None:
     ranked = st.session_state.ranked
@@ -999,7 +1050,6 @@ if st.session_state.get("ranked") is not None:
         st.error("PREDICTION NOT VALID - the data is missing top-5 critical feature(s): **"
                  + ", ".join(_t5m) + "**. These scores are filled with placeholder values and "
                  "should not be trusted. Add or match these columns, then re-run.")
-
     # summary metric cards
     st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
     m1, m2, m3, m4 = st.columns(4)
@@ -1011,9 +1061,7 @@ if st.session_state.get("ranked") is not None:
     m2.metric("Profitable (P50)", f"{n_profit:,}")
     m3.metric("Excluded (dead/weak)", f"{n_dropped:,}")
     m4.metric("Recently re-fraced", f"{n_recent:,}")
-
     st.subheader("Top candidates")
-
     # ---- result filters ----
     fc1, fc2, fc3 = st.columns([1.2, 1.2, 1.6])
     with fc1:
@@ -1033,18 +1081,15 @@ if st.session_state.get("ranked") is not None:
         api_col = next((c for c in ["well_API14", "API14", "api10"] if c in ranked.columns), None)
         api_query = st.text_input("Search well API", "", key="api_search",
                                   placeholder="e.g. 3305304904") if api_col else ""
-
     min_prob = st.slider("Min probability of exceeding breakeven", 0.0, 1.0, 0.0, 0.05,
                          help="Hide wells below this probability. 0 shows everything.")
     only_profitable = st.checkbox("Only profitable wells (expected profit > 0)", value=False)
-
     sort_by = st.radio("Sort by",
                        ["Probability of exceeding breakeven", "P50 (predicted uplift)",
                         "Expected profit", "Risk-adjusted profit"],
                        horizontal=True, index=0,
                        help="Probability ranks real successes best (validated 0.99 vs 0.91 for P50, "
                             "and it wins in every basin), so it's the default. Switch if you prefer.")
-
     view = ranked
     if fbasin != "All basins":
         view = view[view["ENVBasin"] == fbasin]
@@ -1056,7 +1101,6 @@ if st.session_state.get("ranked") is not None:
         view = view[view["prob_exceeds_breakeven"] >= min_prob]
     if only_profitable and "expected_profit_USD" in view.columns:
         view = view[view["expected_profit_USD"] > 0]
-
     # apply the chosen sort
     sort_col = {"Probability of exceeding breakeven": "prob_exceeds_breakeven",
                 "P50 (predicted uplift)": "pred_central_p50",
@@ -1065,7 +1109,6 @@ if st.session_state.get("ranked") is not None:
     if sort_col and sort_col in view.columns:
         view = view.sort_values(sort_col, ascending=False).reset_index(drop=True)
         view["rank"] = np.arange(1, len(view) + 1)
-
     show = [c for c in ["rank", "well_API14", "API14", "ENVBasin", "model_used", "signals",
                         "pred_central_p50", "calib_prob_from_table",
                         "prob_exceeds_breakeven", "expected_profit_USD", "risk_adjusted_profit_USD",
@@ -1076,7 +1119,6 @@ if st.session_state.get("ranked") is not None:
     _cnote = st.session_state.get("calib_note")
     if _cnote:
         st.caption(":grey[" + _cnote + "]")
-
     # color highlighting: green = high probability / profit, red = low
     sty = top[show].style
     try:
@@ -1106,18 +1148,15 @@ if st.session_state.get("ranked") is not None:
     st.download_button("Download full ranked CSV",
                        ranked.to_csv(index=False).encode("utf-8"),
                        file_name="ranked_wells_hybrid.csv", mime="text/csv")
-
     # ---- 3x3 matrix: P50 size  x  probability of exceeding breakeven ----
     if {"pred_central_p50", "prob_exceeds_breakeven"}.issubset(view.columns) and len(view) >= 3:
         st.subheader("Size vs reliability matrix (3x3)")
         st.caption("Columns = predicted size (P50, split into low / mid / high thirds). "
                    "Rows = probability of clearing breakeven, in three bands. "
                    "The strongest wells are top-right: big predicted uplift and high probability.")
-
         v = view.copy()
         p50 = pd.to_numeric(v["pred_central_p50"], errors="coerce")
         clf = pd.to_numeric(v["prob_exceeds_breakeven"], errors="coerce")
-
         # size thirds by P50 terciles
         try:
             q33, q66 = p50.quantile([1/3, 2/3])
@@ -1126,7 +1165,6 @@ if st.session_state.get("ranked") is not None:
         def size_bucket(x):
             if pd.isna(x): return "mid"
             return "low" if x <= q33 else ("high" if x > q66 else "mid")
-
         # probability bands - thresholds chosen from the calibration data (see note below):
         #   < 40%  -> low   (historically these almost never clear breakeven)
         #   40-70% -> mid   (they clear it often, but it isn't a sure thing)
@@ -1135,10 +1173,8 @@ if st.session_state.get("ranked") is not None:
         def prob_bucket(p):
             if pd.isna(p): return "mid"
             return "low" if p < PROB_LOW else ("high" if p >= PROB_HIGH else "mid")
-
         v["_size"] = p50.map(size_bucket)
         v["_prob"] = clf.map(prob_bucket)
-
         sizes = ["low", "mid", "high"]
         rows  = ["high", "mid", "low"]          # high probability on top
         size_hdr = {"low": "Low P50", "mid": "Mid P50", "high": "High P50"}
@@ -1146,10 +1182,8 @@ if st.session_state.get("ranked") is not None:
                    "low": "Low prob (<40%)"}
         # background tint per row (green good, amber caution, grey skip)
         row_bg = {"high": "#EAF6EA", "mid": "#FBF5E7", "low": "#F1F1F3"}
-
         counts = {(s, r): int(((v["_size"] == s) & (v["_prob"] == r)).sum())
                   for s in sizes for r in rows}
-
         # render as an HTML grid
         html = ['<div style="display:grid; grid-template-columns:170px 1fr 1fr 1fr; gap:6px; align-items:stretch;">']
         html.append('<div></div>')
@@ -1173,7 +1207,6 @@ if st.session_state.get("ranked") is not None:
         st.caption("High P50 + high probability (top-right) = strongest candidates. "
                    "High P50 + low probability = big predicted uplift the model doubts; treat as a "
                    "risky bet and look closer before acting.")
-
         # explain WHY the probability thresholds are 40% and 70%
         with st.expander("Why the probability bands are 40% and 70%"):
             st.markdown("""
@@ -1181,7 +1214,6 @@ The thresholds are not round numbers picked by hand - they come from where the m
 predicted probability actually changes real-world behaviour, measured on 5,866 historical
 wells with known outcomes. Grouping those wells by predicted probability and checking how
 often they really cleared breakeven gives:
-
 | Predicted probability | Actually cleared breakeven |
 |---|---|
 | 0-20% | 0% |
@@ -1189,29 +1221,23 @@ often they really cleared breakeven gives:
 | 40-60% | 74% |
 | 60-80% | 86% |
 | 80-100% | 99% |
-
 Two natural break points stand out:
-
 - **40%** is where success jumps. Below it, wells almost never pay off (0-15% real success);
 at 40-60% real success leaps to 74%. So 40% is the line between "almost never works" and
 "works most of the time." Everything below 40% is the **low** band.
 - **70%** is where success becomes near-certain. From about 70% upward, real success sits at
 90-99% - effectively a safe bet. So 70% is the line between "likely" and "almost sure."
 Everything at or above 70% is the **high** band.
-
 The **middle band (40-70%)** is the genuine judgement zone: these wells clear breakeven often
 (roughly three times out of four) but not reliably, so they deserve a closer look rather than
 an automatic yes or no.
-
 One extra reason these bands are conservative in your favour: the model tends to *under-state*
 probability (a well it calls 45% really succeeds about 68% of the time), so a well landing in
 the high band is, if anything, even safer than the label suggests.
 """)
-
         # add matrix labels as downloadable columns
         v["size_bucket"] = v["_size"]
         v["prob_band"] = v["_prob"]
-
         # let the user inspect which wells sit in any cell
         st.markdown("**See the wells in a cell**")
         cc1, cc2 = st.columns(2)
@@ -1237,9 +1263,7 @@ the high band is, if anything, even safer than the label suggests.
                                cell.to_csv(index=False).encode("utf-8"),
                                file_name=f"matrix_{size_key}_{row_key}.csv", mime="text/csv",
                                key="mx_dl")
-
         view = v.drop(columns=["_size", "_prob"])
-
     # ---- well map (if coordinates are present) ----
     lat_col = next((c for c in ["lat", "Latitude", "SurfaceLatitude"] if c in view.columns), None)
     lon_col = next((c for c in ["lon", "Longitude", "SurfaceLongitude"] if c in view.columns), None)
@@ -1274,7 +1298,6 @@ the high band is, if anything, even safer than the label suggests.
                 st.map(mp.rename(columns={"_lat": "lat", "_lon": "lon"})[["lat", "lon"]])
         else:
             st.caption("No valid coordinates to map in the current selection.")
-
     # ---- portfolio calculator ----
     st.subheader("Portfolio calculator")
     st.caption("If you re-frac the top N wells from the filtered list above, what does the "
@@ -1298,7 +1321,6 @@ the high band is, if anything, even safer than the label suggests.
         roi = exp_profit / total_cost * 100 if total_cost else 0
         st.caption(f"Expected portfolio ROI: {roi:,.0f}%  (expected profit / total cost; "
                    f"based on P50 central estimates and ${REFRAC_COST_USD:,.0f} per re-frac)")
-
     # column legend
     with st.expander("What do these columns mean?"):
         st.markdown("""
